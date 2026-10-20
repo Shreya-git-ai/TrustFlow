@@ -15,10 +15,37 @@ class PaymentRequestSchemaTests(unittest.TestCase):
         self.assertEqual(parsed.amount, Decimal("10.00"))
         self.assertEqual(parsed.currency, "USD")
 
+        explicit_null = CreateOrderRequest.from_payload({"currency": None})
+        self.assertEqual(explicit_null.currency, "USD")
+
     def test_create_order_accepts_numeric_string_and_rounds_to_cents(self):
         parsed = CreateOrderRequest.from_payload({"amount": "12.345", "currency": "EUR"})
         self.assertEqual(parsed.amount, Decimal("12.35"))
         self.assertEqual(parsed.currency, "EUR")
+
+    def test_amount_rounding_matches_javascript_number_to_fixed(self):
+        self.assertEqual(
+            CreateOrderRequest.from_payload({"amount": "1.005"}).amount,
+            Decimal("1.00"),
+        )
+        self.assertEqual(
+            CreateOrderRequest.from_payload({"amount": "1.125"}).amount,
+            Decimal("1.13"),
+        )
+
+    def test_amount_underflow_and_overflow_match_javascript_number(self):
+        for amount in ("1e-400", "1e309"):
+            with self.subTest(amount=amount):
+                with self.assertRaisesRegex(InvalidPaymentRequest, "positive number"):
+                    CreateOrderRequest.from_payload({"amount": amount})
+
+    def test_amount_strings_follow_javascript_number_syntax(self):
+        self.assertEqual(
+            CreateOrderRequest.from_payload({"amount": "0x10"}).amount,
+            Decimal("16.00"),
+        )
+        with self.assertRaisesRegex(InvalidPaymentRequest, "positive number"):
+            CreateOrderRequest.from_payload({"amount": "1_0"})
 
     def test_create_order_rejects_nonpositive_amount(self):
         with self.assertRaisesRegex(InvalidPaymentRequest, "positive number"):
@@ -47,6 +74,18 @@ class PaymentRequestSchemaTests(unittest.TestCase):
             {"authorizationId": "AUTH123", "milestoneApproved": True}
         )
         self.assertIsNone(parsed.amount)
+        self.assertEqual(parsed.currency, "USD")
+
+    def test_capture_null_currency_uses_usd_default(self):
+        parsed = CaptureAuthorizationRequest.from_payload(
+            {
+                "authorizationId": "AUTH123",
+                "milestoneApproved": True,
+                "amount": 5,
+                "currency": None,
+            }
+        )
+        self.assertEqual(parsed.amount, Decimal("5.00"))
         self.assertEqual(parsed.currency, "USD")
 
 

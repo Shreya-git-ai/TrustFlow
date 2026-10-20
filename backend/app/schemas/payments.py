@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
+import math
+import re
 from typing import Any
 
 
@@ -9,15 +11,48 @@ class InvalidPaymentRequest(ValueError):
     pass
 
 
-def _as_amount(value: Any) -> Decimal:
+_DECIMAL_NUMBER = re.compile(
+    r"^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$"
+)
+_RADIX_NUMBER = re.compile(r"^0([xX][\da-fA-F]+|[bB][01]+|[oO][0-7]+)$")
+
+
+def _javascript_number(value: Any) -> float:
+    if value is None:
+        return 0.0
     if isinstance(value, bool):
-        value = int(value)
+        return float(int(value))
+    if isinstance(value, (int, float, Decimal)):
+        return float(value)
+    if not isinstance(value, str):
+        raise TypeError
+
+    text = value.strip()
+    if not text:
+        return 0.0
+    if _DECIMAL_NUMBER.fullmatch(text) or text in {"Infinity", "+Infinity", "-Infinity", "NaN"}:
+        return float(text)
+    radix = _RADIX_NUMBER.fullmatch(text)
+    if radix:
+        prefix = radix.group(1)[0].lower()
+        base = {"x": 16, "b": 2, "o": 8}[prefix]
+        return float(int(text[2:], base))
+    raise ValueError
+
+
+def _as_amount(value: Any) -> Decimal:
     try:
-        amount = Decimal(str(value))
-        if not amount.is_finite() or amount <= 0:
+        # The original Express handler coerced input through Number() and then
+        # called toFixed(2). Converting through float preserves those binary
+        # rounding and underflow semantics at the API boundary.
+        numeric_amount = _javascript_number(value)
+        if not math.isfinite(numeric_amount) or numeric_amount <= 0:
             raise InvalidOperation
-        return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    except (InvalidOperation, ValueError, TypeError):
+        amount = Decimal.from_float(numeric_amount)
+        with localcontext() as context:
+            context.prec = 1100
+            return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, OverflowError, ValueError, TypeError):
         raise InvalidPaymentRequest("amount must be a positive number") from None
 
 
@@ -49,7 +84,8 @@ class CreateOrderRequest:
         if amount is None:
             amount = 10
         parsed_amount = _as_amount(amount)
-        currency = _as_currency(body.get("currency", "USD"))
+        currency_value = body.get("currency")
+        currency = _as_currency("USD" if currency_value is None else currency_value)
         return cls(amount=parsed_amount, currency=currency)
 
 
@@ -92,7 +128,8 @@ class CaptureAuthorizationRequest:
         currency = "USD"
         if "amount" in body:
             amount = _as_amount(body["amount"])
-            currency = _as_currency(body.get("currency", "USD"))
+            currency_value = body.get("currency")
+            currency = _as_currency("USD" if currency_value is None else currency_value)
         return cls(
             authorization_id=authorization_id,
             milestone_approved=True,
