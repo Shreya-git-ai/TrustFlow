@@ -1,62 +1,60 @@
-# TrustFlow# TrustFlow
+# TrustFlow
 
-**AI-powered milestone payment coordination**
+**AI-assisted milestone payment coordination**
 
-TrustFlow is an early-stage project exploring how AI agents can help coordinate milestone-based payments between clients and freelancers, with PayPal as the core payment platform.
+TrustFlow is an early-stage project exploring how agents can help clients and freelancers coordinate milestone progress, evidence review, approval, and payments. PayPal is the payment provider for the current backend prototype.
 
-The goal is to connect project progress, milestone verification, approval workflows, and payment operations in a more transparent and reliable process.
+## Project structure
 
-## Problem
+- `backend/` — FastAPI application and PostgreSQL schema.
+- `frontend/` — React and TypeScript app scaffold.
+- `docs/` — architecture and demo notes.
 
-Milestone-based projects often require clients and freelancers to manually coordinate deliverables, approvals, and payments. This can lead to delays, uncertainty, and fragmented communication.
+The current frontend is still the Vite starter. It does not call the backend yet.
 
-TrustFlow aims to simplify this process by connecting milestone progress with payment workflows and using AI to assist with evaluating deliverables and coordinating the next steps.
+## Run the backend
 
-## Proposed Solution
+Use Python 3.10 or newer.
 
-TrustFlow explores an agentic workflow that can:
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# Add sandbox credentials and a PostgreSQL URL to backend/.env.
+python -m app.main
+```
 
-- Track project milestones and their completion status.
-- Evaluate submitted evidence against predefined acceptance criteria.
-- Assist with milestone approval and payment coordination.
-- Integrate with PayPal for supported payment operations.
-- Maintain visibility into milestone progress and payment status.
+The API listens on port 3000 by default, or the value of `PORT` in `.env`. `PAYPAL_BASE_URL` defaults to PayPal sandbox; the checked-in example also sets the sandbox URL explicitly. Use live credentials and PayPal's live API URL only when deliberately configuring a production deployment.
 
-The exact feature set and implementation approach are still being explored.
+Run the backend tests from `backend/` with `python -m unittest discover -s tests -v`. Route tests use a stub PayPal client and do not contact PayPal.
 
-## Key Technologies
+The database schema is in `backend/app/db/schema.sql`. After reviewing the target database and setting `DATABASE_URL`, the compatibility endpoint `POST /db/setup-schema` applies its idempotent `CREATE TABLE/INDEX IF NOT EXISTS` statements. This integration does not run it automatically. `GET /db/test` checks connectivity.
 
-The project may explore the following technologies and tools:
+## Current API
 
-- **PayPal** — Payment integration and money movement.
-- **AI Agents** — Milestone evaluation and workflow coordination.
-- **GitHub** — Project activity and deliverable evidence.
-- **PostgreSQL** — Persistent application data and audit history.
-- **React and TypeScript** — Frontend development.
-- **Node.js** — Backend services and API integration.
+- `GET /health`
+- `GET /paypal/test-auth`
+- `POST /paypal/create-order` — body: `{"amount": 10, "currency": "USD"}`; both fields are optional and default to 10 USD.
+- `POST /paypal/authorize-order` — body: `{"orderId": "..."}`.
+- `POST /paypal/capture-authorization` — body: `{"authorizationId": "...", "milestoneApproved": true}`. `amount` and `currency` may also be supplied for a final capture amount.
+- `GET /db/test`
+- `POST /db/setup-schema`
 
-The final technology stack is yet to be decided.
+The PayPal flow creates an AUTHORIZE order, then the caller submits the order ID for authorization after buyer approval, and later captures the authorization. The capture route currently trusts the caller-provided `milestoneApproved: true` flag. These endpoints do not authenticate application users or persist the PayPal order, authorization, or capture to the database. No PayPal webhook receiver, webhook signature verification, or separate payment verification endpoint exists in the imported implementation.
 
-## Project Status
+See [the architecture notes](docs/ARCHITECTURE.md) for endpoint behavior, configuration, schema contents, and known integration boundaries.
 
-**Early exploration and planning.**
+## Project goals
 
-The problem statement, core objectives, feature scope, and technical architecture are still being refined.
-
-## Goals
-
-- Explore practical applications of agentic AI in payment workflows.
-- Make PayPal an integral part of the payment lifecycle.
-- Improve transparency around milestone completion and payment status.
-- Build a focused, functional prototype with a clear end-to-end workflow.
-
-## Getting Started
-
-Setup instructions will be added once the project structure and technology stack have been finalized.
+- Explore practical uses of agents in milestone workflows.
+- Improve visibility into milestone progress and payment status.
+- Build a focused prototype for coordinating approvals and PayPal payments.
 
 ## Contributing
 
-This project is currently in its early planning stage. More information about development and contributions will be added as the project evolves.
+The project is an early prototype. Contributions should preserve the existing Python backend and React frontend structure.
 
 ## License
 
