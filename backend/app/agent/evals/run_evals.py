@@ -1,7 +1,6 @@
 import argparse
 import json
 import sys
-import time
 
 from app.agent.evals.eval_cases import CASES
 from app.agent.orchestrator import run_assessment
@@ -51,32 +50,21 @@ def evaluate(case, provider) -> dict:
         accepted = case["expected"][v.criterion_id]
         if v.verdict.value not in accepted:
             problems.append(f"criterion {v.criterion_id}: got {v.verdict.value}, accepted {accepted}")
-    detail = "; ".join(problems)
-    detail += f" [attempts={result.trace.attempts}, {result.trace.duration_ms}ms]"
-    return {"name": case["name"], "ok": not problems, "detail": detail}
+    return {"name": case["name"], "ok": not problems, "detail": "; ".join(problems)}
 
 
 def get_provider(name: str, case):
     if name == "oracle":
         return OracleProvider(case)
-    if name == "gemini":
-        from app.agent.providers.gemini_provider import GeminiProvider
-        return GeminiProvider()
     raise SystemExit(f"Provider '{name}' is not added yet. Add it in agent/providers/ and register it in get_provider().")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--provider", default="oracle")
-    parser.add_argument("--delay", type=float, default=0.0, help="seconds to wait between cases (free-tier rate limits)")
     args = parser.parse_args()
 
-    results = []
-    for i, case in enumerate(CASES):
-        if i and args.delay:
-            time.sleep(args.delay)
-        results.append(evaluate(case, get_provider(args.provider, case)))
-
+    results = [evaluate(c, get_provider(args.provider, c)) for c in CASES]
     for r in results:
         print(f"{'PASS' if r['ok'] else 'FAIL'}  {r['name']}  {r['detail']}")
     passed = sum(r["ok"] for r in results)
