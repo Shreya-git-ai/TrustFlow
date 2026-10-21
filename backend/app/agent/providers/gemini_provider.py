@@ -9,7 +9,7 @@ from google.genai import types
 load_dotenv()
 
 RETRY_CODES = {429, 500, 502, 503, 504}
-TRIES_PER_MODEL = 4
+TRIES_PER_MODEL = 2
 
 
 def _is_transient(e: Exception) -> bool:
@@ -18,6 +18,11 @@ def _is_transient(e: Exception) -> bool:
         return code in RETRY_CODES
     text = str(e)
     return any(s in text for s in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "timed out", "timeout"))
+
+
+def _is_daily_quota(e: Exception) -> bool:
+    # A daily quota does not come back with a retry, so do not wait on it.
+    return "PerDay" in str(e)
 
 
 class GeminiProvider:
@@ -53,7 +58,7 @@ class GeminiProvider:
             try:
                 return self._call(model, system, user, timeout_s)
             except Exception as e:
-                if not _is_transient(e):
+                if not _is_transient(e) or _is_daily_quota(e):
                     raise
                 last = e
                 if attempt < TRIES_PER_MODEL:
