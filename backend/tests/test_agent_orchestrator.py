@@ -8,7 +8,7 @@ EVIDENCE = "The landing page is live at the staging URL. It has a contact form a
 
 def make_input(evidence=EVIDENCE):
     return AssessmentInput(
-        milestone_id=1, evidence_revision=1, evidence_text=evidence,
+        milestone_id="1", evidence_revision=1, evidence_text=evidence,
         criteria=[CriterionInput(id=1, text="Contact form exists"),
                   CriterionInput(id=2, text="Mobile responsive")],
     )

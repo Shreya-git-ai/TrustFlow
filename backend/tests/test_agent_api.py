@@ -13,7 +13,7 @@ from app.schemas.assessment import (
 
 EVIDENCE = "Landing page deployed at example.com. Mobile layout tested on three devices."
 PAYLOAD = {
-    "milestone_id": 1,
+    "milestone_id": "1",
     "evidence_revision": 1,
     "criteria": [{"id": 1, "text": "Page is live"}, {"id": 2, "text": "Works on mobile"}],
     "evidence_text": EVIDENCE,

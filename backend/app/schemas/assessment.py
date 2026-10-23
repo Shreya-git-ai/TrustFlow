@@ -16,7 +16,7 @@ class CriterionInput(BaseModel):
 
 
 class AssessmentInput(BaseModel):
-    milestone_id: int
+    milestone_id: str
     evidence_revision: int
     criteria: list[CriterionInput] = Field(min_length=1)
     evidence_text: str
@@ -32,7 +32,7 @@ class CriterionVerdict(BaseModel):
 
 
 class Assessment(BaseModel):
-    milestone_id: int
+    milestone_id: str
     evidence_revision: int
     verdicts: list[CriterionVerdict]
     all_supported: bool  # computed by code, never by the model
