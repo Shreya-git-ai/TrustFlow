@@ -1,4 +1,4 @@
-# TrustFlow Agent <-> Backend Contract (v1)
+﻿# TrustFlow Agent <-> Backend Contract (v1)
 
 ## Call
 POST /agent/assess
@@ -34,4 +34,5 @@ ok | empty_evidence | invalid_output | provider_error
 - If `assessment` is null (failed run), keep the milestone as `submitted` and show a retry.
 - If `all_supported` is true, the client's Approve button can be enabled. The agent never approves or pays.
 - Evidence text over 20,000 characters is rejected with 422; show a limit message in the form.
-- Open question: `milestones.status` has no `assessed` state. Either add it, or derive it from `evidence.assessment IS NOT NULL`.
+- Decision: add `assessed` to `milestones.status` (agreed with the backend owner). Transitions: `submitted` -> `assessed` only when `all_supported` is true; failed or unsupported runs stay `submitted`; approve is allowed only from `assessed`; new evidence after `assessed` returns the milestone to `submitted`. The existing database needs an ALTER on the status CHECK constraint, not just a schema.sql edit.
+
