@@ -1,0 +1,1 @@
+﻿- Evidence links are passed to the model as plain text and are not opened. A criterion such as "page is live" is judged from what the freelancer wrote, not from the page itself. Fetching links, with http/https only and private addresses blocked, is a possible later addition.

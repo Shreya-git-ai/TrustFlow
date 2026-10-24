@@ -1,62 +1,131 @@
-# TrustFlow# TrustFlow
+# TrustFlow
 
-**AI-powered milestone payment coordination**
+**AI-assisted milestone payment coordination**
 
-TrustFlow is an early-stage project exploring how AI agents can help coordinate milestone-based payments between clients and freelancers, with PayPal as the core payment platform.
+TrustFlow is an early-stage project exploring how agents can help clients and freelancers coordinate milestone progress, evidence review, approval, and payments. PayPal is the payment provider for the current backend prototype.
 
-The goal is to connect project progress, milestone verification, approval workflows, and payment operations in a more transparent and reliable process.
+## Project structure
 
-## Problem
+- `backend/` — FastAPI application and PostgreSQL schema.
+- `frontend/` — React and TypeScript evidence review console.
+- `docs/` — architecture and demo notes.
 
-Milestone-based projects often require clients and freelancers to manually coordinate deliverables, approvals, and payments. This can lead to delays, uncertainty, and fragmented communication.
+The frontend submits evidence to the backend assessment endpoint and displays verified criterion results.
 
-TrustFlow aims to simplify this process by connecting milestone progress with payment workflows and using AI to assist with evaluating deliverables and coordinating the next steps.
+## Run the backend
 
-## Proposed Solution
+Use Python 3.10 or newer. From the repository root, create the root-level `venv` once (skip the first command if it already exists), activate it, and install backend requirements:
 
-TrustFlow explores an agentic workflow that can:
+```bash
+python3 -m venv venv       # skip if the root venv already exists
+source venv/bin/activate        # Windows: venv\Scripts\activate
+python -m pip install -r backend/requirements.txt
+cd backend
+```
 
-- Track project milestones and their completion status.
-- Evaluate submitted evidence against predefined acceptance criteria.
-- Assist with milestone approval and payment coordination.
-- Integrate with PayPal for supported payment operations.
-- Maintain visibility into milestone progress and payment status.
+Create `backend/.env` from `.env.example` only if it does not already exist. Otherwise, edit the existing file so you do not overwrite your local settings. For Gemini assessment, set:
 
-The exact feature set and implementation approach are still being explored.
+```dotenv
+GEMINI_API_KEY=your-Google-AI-Studio-key
+TRUSTFLOW_MODEL=gemini-3.6-flash
+TRUSTFLOW_FALLBACK_MODEL=
+```
 
-## Key Technologies
+`gemini-3.6-flash` is the model used in the latest successful local assessment check. The fallback is optional; set it to a different model available to your Gemini API key to use it after transient provider errors. See Google's [Gemini API model list](https://ai.google.dev/gemini-api/docs/models). Keep the API key in `backend/.env` and do not commit it.
 
-The project may explore the following technologies and tools:
+Start the API from `backend/`:
 
-- **PayPal** — Payment integration and money movement.
-- **AI Agents** — Milestone evaluation and workflow coordination.
-- **GitHub** — Project activity and deliverable evidence.
-- **PostgreSQL** — Persistent application data and audit history.
-- **React and TypeScript** — Frontend development.
-- **Node.js** — Backend services and API integration.
+```bash
+python -m app.main
+```
 
-The final technology stack is yet to be decided.
+It listens on port 3000 by default, or the value of `PORT` in `.env`. Check it at `http://localhost:3000/health`. The assessment endpoint is `POST http://localhost:3000/assessments`; it needs the Gemini settings above, but does not require the database or PayPal credentials. `PAYPAL_BASE_URL` defaults to PayPal sandbox; use live credentials and PayPal's live API URL only when deliberately configuring a production deployment.
 
-## Project Status
+## Run the frontend
 
-**Early exploration and planning.**
+Use Node.js 20.19+ or 22.12+. In a separate terminal from the repository root:
 
-The problem statement, core objectives, feature scope, and technical architecture are still being refined.
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-## Goals
+Open the local URL printed by Vite (usually `http://localhost:5173`). The frontend proxies `/api` requests to `http://localhost:3000`, so start the backend in a separate terminal to check its connection and submit assessments.
 
-- Explore practical applications of agentic AI in payment workflows.
-- Make PayPal an integral part of the payment lifecycle.
-- Improve transparency around milestone completion and payment status.
-- Build a focused, functional prototype with a clear end-to-end workflow.
+Run the backend tests from `backend/` with `python -m unittest discover -s tests -v`. Route tests use a stub PayPal client and do not contact PayPal.
 
-## Getting Started
+The database schema is in `backend/app/db/schema.sql`. After reviewing the target database and setting `DATABASE_URL`, the compatibility endpoint `POST /db/setup-schema` applies its idempotent `CREATE TABLE/INDEX IF NOT EXISTS` statements. This integration does not run it automatically. `GET /db/test` checks connectivity.
 
-Setup instructions will be added once the project structure and technology stack have been finalized.
+## Current API
+
+- `GET /health`
+- `GET /agent/health`
+- `POST /agent/assess` — guarded assessment route with in-memory idempotency for matching milestone revisions; changed content for the same revision returns `409`.
+- `GET /paypal/test-auth`
+- `POST /paypal/create-order` — body: `{"amount": 10, "currency": "USD"}`; both fields are optional and default to 10 USD.
+- `POST /paypal/authorize-order` — body: `{"orderId": "..."}`.
+- `POST /paypal/capture-authorization` — body: `{"authorizationId": "...", "milestoneApproved": true}`. `amount` and `currency` may also be supplied for a final capture amount.
+- `POST /assessments` — Gemini assessment used by the frontend. Configure `GEMINI_API_KEY` and `TRUSTFLOW_MODEL`; body includes a string `milestone_id`, `evidence_revision`, `criteria` (`id` and `text`), and `evidence_text` (up to 20,000 characters), with optional `evidence_links`.
+- `GET /db/test`
+- `POST /db/setup-schema`
+
+Both assessment endpoints return per-criterion verdicts, quoted evidence, blockers, and a run trace. `/agent/assess` additionally applies output guards and process-local idempotency. Neither route approves milestones or triggers payments; the current PayPal capture route remains a separate flow.
+
+## Optional integrations
+
+- **Elastic APM:** Set `ELASTIC_APM_SERVER_URL` and, when required by the APM Server, `ELASTIC_APM_SECRET_TOKEN`. The backend reports request performance and captured errors. Request bodies are not captured. Existing structured logs continue to go to standard output.
+- **Zapier:** Set `ZAPIER_WEBHOOK_URL` to a Zapier Catch Hook URL to receive `assessment.completed`, `payment.order_created`, `payment.authorized`, and `payment.captured` events. Delivery is best-effort and happens after the API response. Event payloads omit submitted evidence and credentials.
+
+Leave these settings empty to disable the corresponding integration. Zapier events are not yet persisted for retry after a process restart.
+
+The PayPal flow creates an AUTHORIZE order, then the caller submits the order ID for authorization after buyer approval, and later captures the authorization. The capture route currently trusts the caller-provided `milestoneApproved: true` flag. These endpoints do not authenticate application users or persist the PayPal order, authorization, or capture to the database. No PayPal webhook receiver, webhook signature verification, or separate payment verification endpoint exists in the imported implementation.
+
+See [the architecture notes](docs/ARCHITECTURE.md) for endpoint behavior, configuration, schema contents, and known integration boundaries.
+
+## Project goals
+
+Use Python 3.10 or newer.
+
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# Add sandbox credentials and a PostgreSQL URL to backend/.env.
+python -m app.main
+```
+
+The API listens on port 3000 by default, or the value of `PORT` in `.env`. `PAYPAL_BASE_URL` defaults to PayPal sandbox; the checked-in example also sets the sandbox URL explicitly. Use live credentials and PayPal's live API URL only when deliberately configuring a production deployment.
+
+Run the backend tests from `backend/` with `python -m unittest discover -s tests -v`. Route tests use a stub PayPal client and do not contact PayPal.
+
+The database schema is in `backend/app/db/schema.sql`. After reviewing the target database and setting `DATABASE_URL`, the compatibility endpoint `POST /db/setup-schema` applies its idempotent `CREATE TABLE/INDEX IF NOT EXISTS` statements. This integration does not run it automatically. `GET /db/test` checks connectivity.
+
+## Current API
+
+- `GET /health`
+- `GET /paypal/test-auth`
+- `POST /paypal/create-order` — body: `{"amount": 10, "currency": "USD"}`; both fields are optional and default to 10 USD.
+- `POST /paypal/authorize-order` — body: `{"orderId": "..."}`.
+- `POST /paypal/capture-authorization` — body: `{"authorizationId": "...", "milestoneApproved": true}`. `amount` and `currency` may also be supplied for a final capture amount.
+- `GET /db/test`
+- `POST /db/setup-schema`
+
+The PayPal flow creates an AUTHORIZE order, then the caller submits the order ID for authorization after buyer approval, and later captures the authorization. The capture route currently trusts the caller-provided `milestoneApproved: true` flag. These endpoints do not authenticate application users or persist the PayPal order, authorization, or capture to the database. No PayPal webhook receiver, webhook signature verification, or separate payment verification endpoint exists in the imported implementation.
+
+See [the architecture notes](docs/ARCHITECTURE.md) for endpoint behavior, configuration, schema contents, and known integration boundaries.
+
+## Project goals
+
+- Explore practical uses of agents in milestone workflows.
+- Improve visibility into milestone progress and payment status.
+- Build a focused prototype for coordinating approvals and PayPal payments.
 
 ## Contributing
 
-This project is currently in its early planning stage. More information about development and contributions will be added as the project evolves.
+The project is an early prototype. Contributions should preserve the existing Python backend and React frontend structure.
 
 ## License
 

@@ -1,32 +1,14 @@
-# React + TypeScript + Vite
+# TrustFlow frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The Vite development server serves the evidence review console on port `5173`. API requests go through `/api` and are proxied to the backend at `http://localhost:3000`.
 
-Currently, two official plugins are available:
+From this directory:
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```sh
+npm install
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Run the frontend checks with `npm run lint` and `npm run build`.
+
+To point a built frontend at a different API host, set `VITE_API_BASE_URL` to the API base URL before building, and add the frontend origin to the backend's `CORS_ORIGINS`. The backend exposes `GET /health` and `POST /assessments`. See the repository README for backend setup and Gemini configuration.
