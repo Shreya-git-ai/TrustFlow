@@ -1,33 +1,60 @@
 from __future__ import annotations
-from app.agent.api import router as agent_router
 
-
+from datetime import timezone
 import os
 import time
-from datetime import timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.agent.api import router as agent_router
 from app.db.connection import apply_schema, test_connection
 from app.observability import log_event, parse_traceparent, request_trace
 from app.routers.assessments import router as assessments_router
-from app.payments.paypal import PayPalClient
 from app.routers.payments import router as payments_router
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
+
+def _configure_elastic_apm(app: FastAPI) -> None:
+    server_url = os.getenv("ELASTIC_APM_SERVER_URL")
+    if not server_url:
+        return
+
+    import elasticapm
+    from elasticapm.contrib.starlette import ElasticAPM
+
+    client = elasticapm.Client(
+        service_name=os.getenv("ELASTIC_APM_SERVICE_NAME", "trustflow-backend"),
+        server_url=server_url,
+        secret_token=os.getenv("ELASTIC_APM_SECRET_TOKEN") or None,
+        environment=os.getenv("ELASTIC_APM_ENVIRONMENT", "development"),
+        capture_body="off",
+    )
+    app.add_middleware(ElasticAPM, client=client)
+
+
 app = FastAPI(
-    title="TrustFlow API",
-    docs_url=None,
-    redoc_url=None,
-    openapi_url=None,
+    title="TrustFlow API", docs_url=None, redoc_url=None, openapi_url=None
 )
-
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "traceparent"],
+)
 _configure_elastic_apm(app)
-
 app.include_router(payments_router)
 app.include_router(assessments_router)
 app.include_router(agent_router)

@@ -7,10 +7,10 @@ TrustFlow is an early-stage project exploring how agents can help clients and fr
 ## Project structure
 
 - `backend/` — FastAPI application and PostgreSQL schema.
-- `frontend/` — React and TypeScript app scaffold.
+- `frontend/` — React and TypeScript evidence review console.
 - `docs/` — architecture and demo notes.
 
-The current frontend is still the Vite starter. It does not call the backend yet.
+The frontend submits evidence to the backend assessment endpoint and displays verified criterion results.
 
 ## Run the backend
 
@@ -27,11 +27,11 @@ Create `backend/.env` from `.env.example` only if it does not already exist. Oth
 
 ```dotenv
 GEMINI_API_KEY=your-Google-AI-Studio-key
-TRUSTFLOW_MODEL=gemini-3.8-flash
-TRUSTFLOW_FALLBACK_MODEL=gemini-3.6-flash
+TRUSTFLOW_MODEL=gemini-3.6-flash
+TRUSTFLOW_FALLBACK_MODEL=
 ```
 
-`gemini-3.8-flash` is the recommended primary model for this assessment agent. The fallback is optional; it is tried only after transient provider errors. You can leave `TRUSTFLOW_FALLBACK_MODEL` empty to start. Use model IDs available to your Gemini API key; see Google's [Gemini API model list](https://ai.google.dev/gemini-api/docs/models). Keep the API key in `backend/.env` and do not commit it.
+`gemini-3.6-flash` is the model used in the latest successful local assessment check. The fallback is optional; set it to a different model available to your Gemini API key to use it after transient provider errors. See Google's [Gemini API model list](https://ai.google.dev/gemini-api/docs/models). Keep the API key in `backend/.env` and do not commit it.
 
 Start the API from `backend/`:
 
@@ -51,7 +51,7 @@ npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite (usually `http://localhost:5173`). The frontend is currently the Vite starter and does not call the backend yet; run the API separately when working on backend endpoints.
+Open the local URL printed by Vite (usually `http://localhost:5173`). The frontend proxies `/api` requests to `http://localhost:3000`, so start the backend in a separate terminal to check its connection and submit assessments.
 
 Run the backend tests from `backend/` with `python -m unittest discover -s tests -v`. Route tests use a stub PayPal client and do not contact PayPal.
 
@@ -60,15 +60,17 @@ The database schema is in `backend/app/db/schema.sql`. After reviewing the targe
 ## Current API
 
 - `GET /health`
+- `GET /agent/health`
+- `POST /agent/assess` — guarded assessment route with in-memory idempotency for matching milestone revisions; changed content for the same revision returns `409`.
 - `GET /paypal/test-auth`
 - `POST /paypal/create-order` — body: `{"amount": 10, "currency": "USD"}`; both fields are optional and default to 10 USD.
 - `POST /paypal/authorize-order` — body: `{"orderId": "..."}`.
 - `POST /paypal/capture-authorization` — body: `{"authorizationId": "...", "milestoneApproved": true}`. `amount` and `currency` may also be supplied for a final capture amount.
-- `POST /assessments` — assesses evidence against milestone criteria with Gemini. Configure `GEMINI_API_KEY` and `TRUSTFLOW_MODEL`; body includes `milestone_id`, `evidence_revision`, `criteria` (`id` and `text`), and `evidence_text`, with optional `evidence_links`.
+- `POST /assessments` — Gemini assessment used by the frontend. Configure `GEMINI_API_KEY` and `TRUSTFLOW_MODEL`; body includes a string `milestone_id`, `evidence_revision`, `criteria` (`id` and `text`), and `evidence_text` (up to 20,000 characters), with optional `evidence_links`.
 - `GET /db/test`
 - `POST /db/setup-schema`
 
-The assessment endpoint returns per-criterion verdicts, quoted evidence, blockers, and a run trace. It does not approve milestones or trigger payments; the current PayPal capture route remains a separate flow.
+Both assessment endpoints return per-criterion verdicts, quoted evidence, blockers, and a run trace. `/agent/assess` additionally applies output guards and process-local idempotency. Neither route approves milestones or triggers payments; the current PayPal capture route remains a separate flow.
 
 ## Optional integrations
 

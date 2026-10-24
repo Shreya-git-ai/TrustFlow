@@ -7,4 +7,4 @@
 5. For a sandbox-only capture demonstration, call `POST /paypal/capture-authorization` with the returned authorization ID and `milestoneApproved: true`.
 6. Optionally check `GET /db/test` after configuring a test PostgreSQL database. Review the schema before calling `POST /db/setup-schema`.
 
-The frontend scaffold is not connected to these endpoints. No live transaction, webhook, or persisted payment record is part of this demo.
+The frontend currently supports evidence assessment only; these PayPal steps remain API-only. No live transaction, webhook, or persisted payment record is part of this demo.

@@ -18,7 +18,7 @@ class AssessmentRouteTests(unittest.TestCase):
             '"requested_revision":null}]}'
         ])
         payload = {
-            "milestone_id": 7,
+            "milestone_id": "milestone-7",
             "evidence_revision": 2,
             "criteria": [{"id": 1, "text": "Checkout is complete"}],
             "evidence_text": "Checkout is complete.",
@@ -31,7 +31,7 @@ class AssessmentRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["assessment"]["milestone_id"], 7)
+        self.assertEqual(body["assessment"]["milestone_id"], "milestone-7")
         self.assertTrue(body["assessment"]["all_supported"])
         self.assertEqual(body["trace"]["outcome"], "ok")
 
@@ -43,7 +43,7 @@ class AssessmentRouteTests(unittest.TestCase):
             response = self.client.post(
                 "/assessments",
                 json={
-                    "milestone_id": 1,
+                    "milestone_id": "milestone-1",
                     "evidence_revision": 1,
                     "criteria": [{"id": 1, "text": "Evidence exists"}],
                     "evidence_text": "Evidence exists.",
@@ -55,7 +55,7 @@ class AssessmentRouteTests(unittest.TestCase):
     def test_assessment_route_maps_provider_failure_to_502(self):
         provider = FakeProvider([TimeoutError("provider timeout")])
         payload = {
-            "milestone_id": 1,
+            "milestone_id": "milestone-1",
             "evidence_revision": 1,
             "criteria": [{"id": 1, "text": "Evidence exists"}],
             "evidence_text": "Evidence exists.",
@@ -71,7 +71,7 @@ class AssessmentRouteTests(unittest.TestCase):
         response = self.client.post(
             "/assessments",
             json={
-                "milestone_id": 1,
+                "milestone_id": "milestone-1",
                 "evidence_revision": 1,
                 "criteria": [],
                 "evidence_text": "Evidence exists.",

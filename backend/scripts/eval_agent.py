@@ -5,12 +5,13 @@ expect: True  -> all_supported must be True
         False -> all_supported must be False (also OK if the run is rejected)
         None  -> ambiguous; reported only, never fails
 """
+import os
 import sys
 import uuid
 
 import httpx
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = os.getenv("TRUSTFLOW_API_URL", "http://127.0.0.1:3000").rstrip("/")
 CRITERIA = ["Landing page is live", "Contact form exists", "Works on mobile"]
 
 CASES = [

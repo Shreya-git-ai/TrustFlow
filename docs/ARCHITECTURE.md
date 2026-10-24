@@ -17,7 +17,9 @@ The imported TypeScript source did not include a webhook endpoint, signature ver
 
 ## Gemini assessment
 
-`POST /assessments` accepts `milestone_id`, `evidence_revision`, one or more criteria (`id` and `text`), `evidence_text`, and optional `evidence_links`. It returns a verdict and reasoning per criterion, exact quoted evidence for supported criteria, blockers for other verdicts, and a run trace. Verification checks criterion coverage and rejects supported verdicts whose quote is not present in the supplied evidence text. Evidence is limited to 20,000 characters by the orchestrator. Submitted links are included in the prompt but are not fetched or opened.
+`POST /assessments` accepts a string `milestone_id`, `evidence_revision`, one or more criteria (`id` and `text`), `evidence_text` (up to 20,000 characters), and optional `evidence_links`. It returns a verdict and reasoning per criterion, exact quoted evidence for supported criteria, blockers for other verdicts, and a run trace. Verification checks criterion coverage and rejects supported verdicts whose quote is not present in the supplied evidence text. Submitted links are included in the prompt but are not fetched or opened.
+
+`POST /agent/assess` runs the same assessment logic through an additional guard and idempotency layer. It caches successful results in process memory by milestone ID and evidence revision, returns the cached result for identical content, and rejects changed content for an already-used revision with `409`. The cache is cleared when the process restarts. The frontend currently uses `/assessments` so completion events continue through the existing Zapier integration.
 
 Assessment does not persist results, approve milestones, or trigger payments. Missing Gemini configuration returns `503`; provider errors return `502`. Empty evidence produces an `empty_evidence` trace without calling the model. Invalid model output is retried once by the orchestrator. The Gemini provider makes one call to the configured primary model and, for transient provider errors, one call to the optional fallback model. The trace reports the model that produced the response.
 
@@ -35,7 +37,7 @@ Create `backend/.env` from `backend/.env.example` if it does not already exist. 
 
 ## Integration boundaries
 
-- The React/Vite frontend remains a starter and is not connected to these routes.
+- The React/Vite frontend currently calls the assessment endpoint; PayPal routes do not yet have frontend controls.
 - No existing Python payment, database, or router implementation was present to merge with.
 - The source Postman environment and globals contain empty `values` lists; they add no API contract or credentials.
 - The Node package scripts, lockfile, and TypeScript config were specific to the Express service and are not used by the Python backend.

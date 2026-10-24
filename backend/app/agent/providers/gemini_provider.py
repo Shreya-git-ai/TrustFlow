@@ -18,11 +18,6 @@ def _is_transient(e: Exception) -> bool:
     return any(s in text for s in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "timed out", "timeout"))
 
 
-def _is_daily_quota(e: Exception) -> bool:
-    # A daily quota does not come back with a retry, so do not wait on it.
-    return "PerDay" in str(e)
-
-
 class GeminiProvider:
     """Gemini provider with one bounded fallback attempt for transient errors."""
 

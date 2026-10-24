@@ -1,7 +1,9 @@
 """Local end-to-end demo: DB-shaped milestone -> /agent/assess -> client approval -> stub payout."""
+import os
+
 import httpx
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = os.getenv("TRUSTFLOW_API_URL", "http://127.0.0.1:3000").rstrip("/")
 
 
 def build_input(milestone: dict, evidence_rows: list[dict]) -> dict:
