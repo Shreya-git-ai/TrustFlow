@@ -34,7 +34,7 @@ class OracleProvider:
 
 def to_input(case) -> AssessmentInput:
     return AssessmentInput(
-        milestone_id=1,
+        milestone_id="1",
         evidence_revision=1,
         criteria=[CriterionInput(id=i, text=t) for i, t in case["criteria"]],
         evidence_text=case["evidence"],

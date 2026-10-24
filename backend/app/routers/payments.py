@@ -5,8 +5,8 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from fastapi.responses import JSONResponse
-
 from app.integrations.zapier import send_event
+from app.observability import log_event
 from app.payments.paypal import PayPalClient, log_paypal_failure
 from app.schemas.payments import (
     AuthorizeOrderRequest,
