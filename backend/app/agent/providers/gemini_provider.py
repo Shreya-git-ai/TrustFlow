@@ -1,6 +1,4 @@
 import os
-import random
-import time
 
 from dotenv import load_dotenv
 from google import genai
@@ -9,7 +7,6 @@ from google.genai import types
 load_dotenv()
 
 RETRY_CODES = {429, 500, 502, 503, 504}
-TRIES_PER_MODEL = 4
 
 
 def _is_transient(e: Exception) -> bool:
@@ -21,7 +18,7 @@ def _is_transient(e: Exception) -> bool:
 
 
 class GeminiProvider:
-    """Real LLM provider. Retries transient errors, optionally falls back to a second model."""
+    """Gemini provider with one bounded fallback attempt for transient errors."""
 
     def __init__(self, model: str | None = None):
         api_key = os.getenv("GEMINI_API_KEY")
@@ -40,32 +37,19 @@ class GeminiProvider:
             contents=user,
             config=types.GenerateContentConfig(
                 system_instruction=system,
-                temperature=0,
                 response_mime_type="application/json",
                 http_options=types.HttpOptions(timeout=int(timeout_s * 1000)),  # ms
             ),
         )
         return response.text or ""
 
-    def _call_with_retries(self, model: str, system: str, user: str, timeout_s: float) -> str:
-        last: Exception | None = None
-        for attempt in range(1, TRIES_PER_MODEL + 1):
-            try:
-                return self._call(model, system, user, timeout_s)
-            except Exception as e:
-                if not _is_transient(e):
-                    raise
-                last = e
-                if attempt < TRIES_PER_MODEL:
-                    time.sleep(min(2 ** attempt, 20) + random.random())
-        raise last  # type: ignore[misc]
-
     def complete_json(self, system: str, user: str, timeout_s: float = 30.0) -> str:
         try:
-            return self._call_with_retries(self.model, system, user, timeout_s)
+            return self._call(self.model, system, user, timeout_s)
         except Exception as e:
             if self.fallback_model and _is_transient(e):
-                return self._call_with_retries(self.fallback_model, system, user, timeout_s)
+                self.name = f"gemini:{self.fallback_model}"
+                return self._call(self.fallback_model, system, user, timeout_s)
             raise
 
     # keeps smoke_gemini.py working

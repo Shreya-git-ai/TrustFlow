@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from fastapi.responses import JSONResponse
 
-from app.observability import log_event
+from app.integrations.zapier import send_event
 from app.payments.paypal import PayPalClient, log_paypal_failure
 from app.schemas.payments import (
     AuthorizeOrderRequest,
@@ -67,7 +67,9 @@ async def test_paypal_auth(
 
 @router.post("/paypal/create-order")
 async def create_order(
-    request: Request, paypal: PayPalClient = Depends(get_paypal_client)
+    request: Request,
+    background_tasks: BackgroundTasks,
+    paypal: PayPalClient = Depends(get_paypal_client),
 ) -> JSONResponse:
     try:
         payload, valid_json = await _request_body(request)
@@ -103,6 +105,16 @@ async def create_order(
             response_body["orderId"] = data["id"]
         if "status" in data:
             response_body["status"] = data["status"]
+        background_tasks.add_task(
+            send_event,
+            "payment.order_created",
+            {
+                "order_id": data.get("id"),
+                "status": data.get("status"),
+                "amount": str(payment.amount),
+                "currency": payment.currency,
+            },
+        )
         return JSONResponse(
             status_code=201,
             content=response_body,
@@ -116,7 +128,9 @@ async def create_order(
 
 @router.post("/paypal/authorize-order")
 async def authorize_order(
-    request: Request, paypal: PayPalClient = Depends(get_paypal_client)
+    request: Request,
+    background_tasks: BackgroundTasks,
+    paypal: PayPalClient = Depends(get_paypal_client),
 ) -> JSONResponse:
     try:
         payload, valid_json = await _request_body(request)
@@ -158,6 +172,16 @@ async def authorize_order(
             response_body["orderId"] = data["id"]
         if "status" in data:
             response_body["orderStatus"] = data["status"]
+        background_tasks.add_task(
+            send_event,
+            "payment.authorized",
+            {
+                "order_id": data.get("id", payment.order_id),
+                "authorization_id": authorization.get("id"),
+                "status": authorization.get("status"),
+                "amount": authorization.get("amount"),
+            },
+        )
         return JSONResponse(content=response_body)
     except Exception as error:
         log_paypal_failure("paypal.order.authorize.failed", error)
@@ -168,7 +192,9 @@ async def authorize_order(
 
 @router.post("/paypal/capture-authorization")
 async def capture_authorization(
-    request: Request, paypal: PayPalClient = Depends(get_paypal_client)
+    request: Request,
+    background_tasks: BackgroundTasks,
+    paypal: PayPalClient = Depends(get_paypal_client),
 ) -> JSONResponse:
     try:
         payload, valid_json = await _request_body(request)
@@ -194,6 +220,15 @@ async def capture_authorization(
         for key in ("id", "status", "amount"):
             if key in data:
                 response_body[response_keys[key]] = data[key]
+        background_tasks.add_task(
+            send_event,
+            "payment.captured",
+            {
+                "capture_id": data.get("id"),
+                "status": data.get("status"),
+                "amount": data.get("amount"),
+            },
+        )
         return JSONResponse(content=response_body)
     except Exception as error:
         log_paypal_failure("paypal.authorization.capture.failed", error)

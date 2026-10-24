@@ -20,7 +20,7 @@ class AssessmentInput(BaseModel):
     evidence_revision: int
     criteria: list[CriterionInput] = Field(min_length=1)
     evidence_text: str
-    evidence_links: list[str] = []
+    evidence_links: list[str] = Field(default_factory=list)
 
 
 class CriterionVerdict(BaseModel):
