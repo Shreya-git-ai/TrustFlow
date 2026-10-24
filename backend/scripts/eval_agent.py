@@ -1,6 +1,6 @@
-"""Eval runner: sends known cases to /agent/assess and checks the verdicts.
+﻿"""Eval runner: sends known cases to /agent/assess and checks the verdicts.
 
-Re-run after every prompt or model change:  python backend\scripts\eval_agent.py
+Re-run after every prompt or model change:  python backend/scripts/eval_agent.py
 expect: True  -> all_supported must be True
         False -> all_supported must be False (also OK if the run is rejected)
         None  -> ambiguous; reported only, never fails
