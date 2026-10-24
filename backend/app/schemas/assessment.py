@@ -1,4 +1,4 @@
-from enum import Enum
+﻿from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -19,7 +19,7 @@ class AssessmentInput(BaseModel):
     milestone_id: str
     evidence_revision: int
     criteria: list[CriterionInput] = Field(min_length=1)
-    evidence_text: str
+    evidence_text: str = Field(max_length=20_000)
     evidence_links: list[str] = []
 
 
