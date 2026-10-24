@@ -11,6 +11,23 @@ from app.services.auth import lookup_session
 SESSION_COOKIE = "trustflow_session"
 
 
+def allowed_origins() -> set[str]:
+    origins = {
+        item.strip().rstrip("/")
+        for item in os.getenv(
+            "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+        ).split(",")
+        if item.strip()
+    }
+    # Vercel provides these deployment hosts at runtime; allow the browser's
+    # same-origin requests for production, preview, and branch deployments.
+    for variable in ("VERCEL_URL", "VERCEL_BRANCH_URL", "VERCEL_PROJECT_PRODUCTION_URL"):
+        host = os.getenv(variable, "").strip().rstrip("/")
+        if host:
+            origins.add(host if "://" in host else f"https://{host}")
+    return origins
+
+
 def set_session_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         SESSION_COOKIE,
@@ -40,14 +57,7 @@ def require_csrf(
         raise HTTPException(status_code=403, detail="CSRF validation failed")
     origin = request.headers.get("origin")
     if origin:
-        allowed = {
-            item.strip()
-            for item in os.getenv(
-                "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
-            ).split(",")
-            if item.strip()
-        }
-        if origin not in allowed:
+        if origin.rstrip("/") not in allowed_origins():
             raise HTTPException(status_code=403, detail="Origin is not allowed")
     return user
 

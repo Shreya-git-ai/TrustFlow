@@ -1,0 +1,105 @@
+services:
+  - type: web
+    name: trustflow-api
+    runtime: python
+    plan: starter
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m app.main
+    healthCheckPath: /health
+    disk:
+      name: trustflow-evidence
+      mountPath: /var/data
+      sizeGB: 2
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: TRUSTFLOW_ENV
+        value: production
+      - key: TRUSTFLOW_UPLOAD_DIR
+        value: /var/data/uploads
+      - key: TRUSTFLOW_FRONTEND_URL
+        value: https://trustflow-ui.onrender.com
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM_EMAIL
+        sync: false
+      - key: SMTP_USE_SSL
+        value: "false"
+      - key: SMTP_USE_STARTTLS
+        value: "true"
+      - key: SESSION_HASH_SALT
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://trustflow-ui.onrender.com
+      - key: PAYPAL_BASE_URL
+        value: https://api-m.sandbox.paypal.com
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: PAYPAL_RETURN_URL
+        value: https://trustflow-ui.onrender.com/payment-return
+      - key: PAYPAL_CANCEL_URL
+        value: https://trustflow-ui.onrender.com/payment-cancel
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TRUSTFLOW_MODEL
+        sync: false
+      - key: TRUSTFLOW_FALLBACK_MODEL
+        value: ""
+      - key: ZAPIER_WEBHOOK_URL
+        sync: false
+      - key: ELASTIC_APM_SERVER_URL
+        value: ""
+      - key: ELASTIC_APM_SECRET_TOKEN
+        sync: false
+
+  - type: static
+    name: trustflow-ui
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://trustflow-api.onrender.com
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+
+  - type: cron
+    name: trustflow-outbox-retry
+    runtime: python
+    rootDir: backend
+    schedule: "*/15 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scripts/deliver_events.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: DATABASE_URL
+        sync: false
+      - key: ZAPIER_WEBHOOK_URL
+        sync: false

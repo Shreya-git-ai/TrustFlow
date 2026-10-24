@@ -57,7 +57,13 @@ def _send(to_address: str, subject: str, body: str) -> None:
 
 
 def _frontend_url() -> str:
-    return os.getenv("TRUSTFLOW_FRONTEND_URL", "http://localhost:5173").rstrip("/")
+    configured = os.getenv("TRUSTFLOW_FRONTEND_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    vercel_host = os.getenv("VERCEL_PROJECT_PRODUCTION_URL") or os.getenv("VERCEL_URL")
+    if vercel_host:
+        return f"https://{vercel_host.rstrip('/')}"
+    return "http://localhost:5173"
 
 
 def send_verification_email(email: str, name: str, token: str) -> bool:

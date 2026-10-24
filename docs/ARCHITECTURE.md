@@ -1,43 +1,42 @@
-# Backend architecture
+# TrustFlow architecture
 
-The backend runs as one FastAPI application. PayPal HTTP calls live in `backend/app/payments/paypal.py`, HTTP routes in `backend/app/routers/payments.py`, assessment routes in `backend/app/routers/assessments.py`, and assessment logic in `backend/app/agent/`. Database access lives in `backend/app/db/connection.py`, with the PostgreSQL schema in `backend/app/db/schema.sql`. `backend/app/main.py` registers the routes and handles request trace IDs. No Node service is required for the API.
+TrustFlow is a React/Vite frontend backed by one FastAPI application and PostgreSQL. The frontend sends cookie-authenticated requests to the API. The API is the source of truth for membership, milestone revisions, assessments, client decisions, PayPal state, and the audit timeline.
 
-## Existing PayPal contract
+## Request and data flow
 
-| Route | Request | Success response | Behavior |
-| --- | --- | --- | --- |
-| `GET /paypal/test-auth` | — | `{"success": true, "message": "Authenticated with PayPal"}` | Requests and discards an OAuth client-credentials token. |
-| `POST /paypal/create-order` | Optional `amount` and `currency` (defaults `10`, `USD`) | `201` with `message`, `orderId`, `status`, and `approvalUrl` | Creates a PayPal v2 Checkout order with `intent: AUTHORIZE`. |
-| `POST /paypal/authorize-order` | `orderId` | `message`, `orderId`, `orderStatus`, `authorizationId`, `authorizationStatus`, `amount` | Calls the PayPal authorize endpoint for the supplied order. |
-| `POST /paypal/capture-authorization` | `authorizationId`, `milestoneApproved: true`; optional `amount` and `currency` | `message`, `captureId`, `status`, `amount` | Calls PayPal capture. If no amount is given, PayPal captures the remaining authorized amount; with an amount, it sends `final_capture: true`. |
+1. `frontend/src/App.tsx` renders the role-specific workspace and calls `frontend/src/api/assessment.ts`. In development Vite proxies `/api` to port 3000; `VITE_API_BASE_URL` configures a deployed API origin.
+2. `backend/app/main.py` loads environment settings, configures exact-origin credentialed CORS, tracing, error handling, health routes, and registers the auth, workflow, and payment routers.
+3. `backend/app/routers/auth.py` and `backend/app/security.py` establish cookie sessions. `backend/app/services/auth.py` hashes passwords and session tokens, enforces the login-attempt window, and rotates sessions when account credentials change. Mutations use the CSRF token returned by `/auth/me`, login, or signup.
+4. `backend/app/routers/workflow.py` validates HTTP inputs and delegates business logic to `backend/app/services/workflow.py`. Services query PostgreSQL through the shared connection contexts in `backend/app/db/repository.py`.
+5. The freelancer's evidence submission creates a numbered revision. File bytes are validated and stored privately by `backend/app/services/storage.py`; only text is sent to the assessor. The assessment route snapshots current criteria and text, invokes the Gemini provider through `backend/app/agent/orchestrator.py`, validates exact quotes and criterion coverage, then persists the report, findings, and audit event.
+6. The client decision route checks the latest successful report and current evidence revision before recording approval or a revision request. The assessment route itself never changes approval or payment state.
+7. `backend/app/routers/payments.py` calls the PayPal client in `backend/app/payments/paypal.py`; `backend/app/services/payments.py` persists each state transition and checks the current client decision, assessment, and evidence before capture. Verified webhook events and reconciliation resolve uncertain capture outcomes without blindly repeating capture.
+8. Workflow and payment services enqueue optional Zapier notifications in `integration_outbox`. `backend/app/services/events.py` leases and retries delivery; `backend/scripts/deliver_events.py` is also run by the optional Render cron service.
 
-The implementation obtains a new OAuth token for each operation and sends a unique `PayPal-Request-Id` for order creation, authorization, and capture. PayPal requests have a 15-second timeout. It returns sanitized API errors and does not return or log access tokens. Traces accept a valid incoming W3C `traceparent`, return a new response `traceparent`, and emit JSON request and span logs.
+## Backend file map
 
-The imported TypeScript source did not include a webhook endpoint, signature verification, order-status verification, or application-user authentication. The capture approval check is only the caller-provided boolean from the existing contract. Payment operations are not written to PostgreSQL, and audit tables are not currently populated. Those behaviors have not been implied or added in the Python port.
+| Area | Main files | Responsibility |
+| --- | --- | --- |
+| App composition | `backend/app/main.py`, `backend/app/observability.py` | FastAPI setup, CORS, traces, health, sanitized errors, optional APM. |
+| Authentication | `backend/app/routers/auth.py`, `backend/app/security.py`, `backend/app/services/auth.py` | Signup, login, session lookup and revocation, CSRF, role and session security. |
+| Product API | `backend/app/routers/workflow.py`, `backend/app/services/workflow.py` | Projects, invitations, milestones, evidence, assessment persistence, decisions, audit. |
+| Assessment | `backend/app/agent/`, `backend/app/schemas/assessment.py` | Gemini provider, guarded prompt/output, validation, report data model. |
+| Payments | `backend/app/routers/payments.py`, `backend/app/services/payments.py`, `backend/app/payments/paypal.py` | Durable payment state, PayPal order/authorization/capture, webhook verification and reconciliation. |
+| Persistence | `backend/app/db/connection.py`, `backend/app/db/repository.py`, `backend/app/db/schema.sql`, `backend/app/db/migrations/` | PostgreSQL connections, shared transaction boundary, base schema and additive migration. |
+| Uploads and integrations | `backend/app/services/storage.py`, `backend/app/services/events.py`, `backend/app/integrations/zapier.py` | Private upload handling and retryable optional event delivery. |
+| Scripts and checks | `backend/scripts/`, `backend/tests/`, `postman/` | Explicit database setup, outbox delivery, offline/mocked tests, API collection. |
 
-## Gemini assessment
+## State and safety boundaries
 
-`POST /assessments` accepts a string `milestone_id`, `evidence_revision`, one or more criteria (`id` and `text`), `evidence_text` (up to 20,000 characters), and optional `evidence_links`. It returns a verdict and reasoning per criterion, exact quoted evidence for supported criteria, blockers for other verdicts, and a run trace. Verification checks criterion coverage and rejects supported verdicts whose quote is not present in the supplied evidence text. Submitted links are included in the prompt but are not fetched or opened.
+- User roles are `client` and `freelancer`; project membership starts `invited` and must be accepted by the assigned freelancer.
+- Evidence revisions are numbered per milestone. New evidence clears any earlier approval reference. Assessments record the revision and are marked stale if evidence changed during model execution.
+- The assessor sees the text supplied by the freelancer. Reference URLs are stored but not fetched. Attachments are private and downloadable by project members, but their contents are not extracted, OCRed, or inspected. A report discloses these limitations.
+- Only the authenticated project client can decide. Approval requires a current successful report with every criterion marked met. Capture independently checks the persisted approval, latest decision, evidence revision, report and PayPal authorization.
+- The client creates a PayPal order and authorizes it after the buyer approves it. An uncertain capture is kept `capture_pending`; the same operation is not sent again. A verified webhook or authenticated order reconciliation confirms the result.
+- TrustFlow coordinates PayPal payments; it is not a legal escrow provider.
 
-`POST /agent/assess` runs the same assessment logic through an additional guard and idempotency layer. It caches successful results in process memory by milestone ID and evidence revision, returns the cached result for identical content, and rejects changed content for an already-used revision with `409`. The cache is cleared when the process restarts. The frontend currently uses `/assessments` so completion events continue through the existing Zapier integration.
+## Database setup
 
-Assessment does not persist results, approve milestones, or trigger payments. Missing Gemini configuration returns `503`; provider errors return `502`. Empty evidence produces an `empty_evidence` trace without calling the model. Invalid model output is retried once by the orchestrator. The Gemini provider makes one call to the configured primary model and, for transient provider errors, one call to the optional fallback model. The trace reports the model that produced the response.
+`backend/app/db/schema.sql` creates or preserves the original core tables. `backend/app/db/migrations/001_mvp.sql` adds authentication/session, membership, revision, assessment, decision, payment, webhook, and outbox state. Run `python scripts/setup_db.py` from `backend/` after configuring `DATABASE_URL`. App startup does not apply schema changes. The setup command is idempotent for the checked-in schema and migration.
 
-Set `GEMINI_API_KEY` and `TRUSTFLOW_MODEL`; `TRUSTFLOW_FALLBACK_MODEL` is optional. The README example uses `gemini-3.8-flash` with `gemini-3.6-flash` as fallback. The endpoint emits a best-effort `assessment.completed` Zapier event when a Catch Hook URL is configured; the event omits submitted evidence.
-
-## Database
-
-`backend/app/db/schema.sql` preserves the seven original tables: `users`, `projects`, `milestones`, `evidence`, `payments`, `audit_events`, and `webhook_events`, along with their constraints and indexes. The schema is applied only when `POST /db/setup-schema` is explicitly called. Its statements use `IF NOT EXISTS`; the application does not apply migrations at startup. `GET /db/test` runs a read-only connectivity query.
-
-Configure `DATABASE_URL` with the PostgreSQL URL and SSL mode required by the database host. Connections are opened only for database routes.
-
-## Configuration
-
-Create `backend/.env` from `backend/.env.example` if it does not already exist. Set `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, and `DATABASE_URL` for those integrations. Set `GEMINI_API_KEY` and `TRUSTFLOW_MODEL` to use assessment, and optionally set `TRUSTFLOW_FALLBACK_MODEL`. `ELASTIC_APM_SERVER_URL` and `ZAPIER_WEBHOOK_URL` enable their respective optional integrations; leave them empty to disable them. The default PayPal endpoint is `https://api-m.sandbox.paypal.com`; `PAYPAL_BASE_URL` can override it. `PAYPAL_RETURN_URL` and `PAYPAL_CANCEL_URL` default to local port 3000. `PORT` defaults to 3000. Never copy local credentials into the example file or Git.
-
-## Integration boundaries
-
-- The React/Vite frontend currently calls the assessment endpoint; PayPal routes do not yet have frontend controls.
-- No existing Python payment, database, or router implementation was present to merge with.
-- The source Postman environment and globals contain empty `values` lists; they add no API contract or credentials.
-- The Node package scripts, lockfile, and TypeScript config were specific to the Express service and are not used by the Python backend.
+The automated suite uses mocks and does not connect to PostgreSQL, Gemini, PayPal, or Zapier. A database URL and provider credentials are required to exercise those integrations locally. The prior migration audit's live Neon probe was blocked by DNS, so live database application remains unverified.
