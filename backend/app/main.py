@@ -1,4 +1,6 @@
 from __future__ import annotations
+from app.agent.api import router as agent_router
+
 
 import os
 import time
@@ -20,6 +22,7 @@ app = FastAPI(
     title="TrustFlow API", docs_url=None, redoc_url=None, openapi_url=None
 )
 app.include_router(payments_router)
+app.include_router(agent_router)
 
 
 @app.middleware("http")
