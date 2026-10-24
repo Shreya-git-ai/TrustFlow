@@ -26,3 +26,12 @@ Models live in schemas/assessment.py (single source of truth).
 
 ## Outcomes
 ok | empty_evidence | invalid_output | provider_error
+## What the backend should do with the result
+
+- Call `POST /agent/assess` after saving the evidence. `milestone_id` is the UUID string; `evidence_revision` is the number of evidence rows for that milestone.
+- Store the response in `evidence.assessment` (JSONB) on the matching evidence row.
+- Write an `audit_events` row: `event_type` = `assessment_completed` or `assessment_failed`, `actor_type` = `ai`, `details` = model, prompt_version, duration_ms, outcome.
+- If `assessment` is null (failed run), keep the milestone as `submitted` and show a retry.
+- If `all_supported` is true, the client's Approve button can be enabled. The agent never approves or pays.
+- Evidence text over 20,000 characters is rejected with 422; show a limit message in the form.
+- Open question: `milestones.status` has no `assessed` state. Either add it, or derive it from `evidence.assessment IS NOT NULL`.
