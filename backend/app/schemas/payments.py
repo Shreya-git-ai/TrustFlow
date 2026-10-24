@@ -108,7 +108,6 @@ class AuthorizeOrderRequest:
 @dataclass(frozen=True)
 class CaptureAuthorizationRequest:
     authorization_id: str
-    milestone_approved: bool
     amount: Decimal | None
     currency: str
 
@@ -122,8 +121,6 @@ class CaptureAuthorizationRequest:
             or not authorization_id.isalnum()
         ):
             raise InvalidPaymentRequest("A valid authorizationId is required")
-        if body.get("milestoneApproved") is not True:
-            raise InvalidPaymentRequest("Milestone approval is required before capture")
         amount: Decimal | None = None
         currency = "USD"
         if "amount" in body:
@@ -132,7 +129,6 @@ class CaptureAuthorizationRequest:
             currency = _as_currency("USD" if currency_value is None else currency_value)
         return cls(
             authorization_id=authorization_id,
-            milestone_approved=True,
             amount=amount,
             currency=currency,
         )

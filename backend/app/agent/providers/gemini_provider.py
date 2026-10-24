@@ -7,7 +7,6 @@ from google.genai import types
 load_dotenv()
 
 RETRY_CODES = {429, 500, 502, 503, 504}
-TRIES_PER_MODEL = 2
 
 
 def _is_transient(e: Exception) -> bool:
@@ -16,6 +15,11 @@ def _is_transient(e: Exception) -> bool:
         return code in RETRY_CODES
     text = str(e)
     return any(s in text for s in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "timed out", "timeout"))
+
+
+def _is_daily_quota(e: Exception) -> bool:
+    text = str(e).lower()
+    return "quota" in text and any(marker in text for marker in ("per day", "daily", "requests/day", "limit: 0"))
 
 
 class GeminiProvider:
@@ -44,24 +48,11 @@ class GeminiProvider:
         )
         return response.text or ""
 
-    def _call_with_retries(self, model: str, system: str, user: str, timeout_s: float) -> str:
-        last: Exception | None = None
-        for attempt in range(1, TRIES_PER_MODEL + 1):
-            try:
-                return self._call(model, system, user, timeout_s)
-            except Exception as e:
-                if not _is_transient(e) or _is_daily_quota(e):
-                    raise
-                last = e
-                if attempt < TRIES_PER_MODEL:
-                    time.sleep(min(2 ** attempt, 20) + random.random())
-        raise last  # type: ignore[misc]
-
     def complete_json(self, system: str, user: str, timeout_s: float = 30.0) -> str:
         try:
             return self._call(self.model, system, user, timeout_s)
         except Exception as e:
-            if self.fallback_model and _is_transient(e):
+            if self.fallback_model and _is_transient(e) and not _is_daily_quota(e):
                 self.name = f"gemini:{self.fallback_model}"
                 return self._call(self.fallback_model, system, user, timeout_s)
             raise

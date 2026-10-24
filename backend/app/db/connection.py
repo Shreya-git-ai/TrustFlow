@@ -5,18 +5,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+
 
 class DatabaseNotConfigured(RuntimeError):
     pass
 
 
-def _connect() -> Any:
+def _connect(*, row_factory: Any = None) -> Any:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         raise DatabaseNotConfigured("DATABASE_URL is not configured")
     import psycopg
 
-    return psycopg.connect(database_url, connect_timeout=10)
+    return psycopg.connect(database_url, connect_timeout=10, row_factory=row_factory)
 
 
 def test_connection() -> tuple[str, datetime]:
@@ -34,3 +38,9 @@ def apply_schema() -> None:
         for statement in schema.split(";"):
             if statement.strip():
                 connection.execute(statement)
+        migrations = schema_path.parent / "migrations"
+        if migrations.exists():
+            for migration in sorted(migrations.glob("*.sql")):
+                for statement in migration.read_text(encoding="utf-8").split(";"):
+                    if statement.strip():
+                        connection.execute(statement)

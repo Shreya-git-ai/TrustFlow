@@ -1,6 +1,7 @@
-﻿"""Thin FastAPI layer over the assessment orchestrator.
+"""Legacy adapter retained for isolated router tests; never mount in the product app.
 
- backend can either include this router or call POST /agent/assess over HTTP.
+Production assessments run through the authenticated, PostgreSQL-backed milestone
+workflow router. This module’s process-local cache is not authoritative.
 
 Idempotency rules:
 - same (milestone_id, evidence_revision) + same content  -> cached result

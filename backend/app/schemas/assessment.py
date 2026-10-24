@@ -5,22 +5,34 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class Verdict(str, Enum):
+    MET = "met"
+    PARTIALLY_MET = "partially_met"
+    NOT_MET = "not_met"
+    UNABLE_TO_VERIFY = "unable_to_verify"
+    # Kept for the original demo API contract. New reports use the four values above.
     SUPPORTED = "supported"
     NOT_SUPPORTED = "not_supported"
     UNCLEAR = "unclear"
 
 
 class CriterionInput(BaseModel):
-    id: int
-    text: str
+    id: int = Field(gt=0)
+    text: str = Field(min_length=1, max_length=1000)
 
 
 class AssessmentInput(BaseModel):
-    milestone_id: str
-    evidence_revision: int
-    criteria: list[CriterionInput] = Field(min_length=1)
-    evidence_text: str
-    evidence_links: list[str] = Field(default_factory=list)
+    milestone_id: str = Field(min_length=1, max_length=100, coerce_numbers_to_str=True)
+    evidence_revision: int = Field(ge=1)
+    criteria: list[CriterionInput] = Field(min_length=1, max_length=50)
+    evidence_text: str = Field(max_length=20_000)
+    evidence_links: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def unique_criteria(self):
+        ids = [criterion.id for criterion in self.criteria]
+        if len(ids) != len(set(ids)):
+            raise ValueError("criterion IDs must be unique")
+        return self
 
 
 class CriterionVerdict(BaseModel):
@@ -29,6 +41,10 @@ class CriterionVerdict(BaseModel):
     quote: str | None = None  # exact text from the evidence
     reasoning: str
     requested_revision: str | None = None
+    missing_or_contradictory: list[str] = Field(default_factory=list)
+    recommended_next_action: str | None = None
+    observed_facts: list[str] = Field(default_factory=list)
+    model_inferences: list[str] = Field(default_factory=list)
 
 
 class Assessment(BaseModel):
@@ -37,10 +53,13 @@ class Assessment(BaseModel):
     verdicts: list[CriterionVerdict]
     all_supported: bool  # computed by code, never by the model
     blockers: list[str]  # computed by code from non-supported verdicts
+    overall_summary: str = ""
+    limitations: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def check_consistency(self):
-        expected = all(v.verdict == Verdict.SUPPORTED for v in self.verdicts)
+        passing = {Verdict.MET, Verdict.SUPPORTED}
+        expected = bool(self.verdicts) and all(v.verdict in passing for v in self.verdicts)
         if self.all_supported != expected:
             raise ValueError("all_supported does not match the verdicts")
         return self

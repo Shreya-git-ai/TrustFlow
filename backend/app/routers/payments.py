@@ -1,237 +1,239 @@
 from __future__ import annotations
 
-import json
-from typing import Any
+from decimal import Decimal, InvalidOperation
+from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from app.integrations.zapier import send_event
+
 from app.observability import log_event
-from app.payments.paypal import PayPalClient, log_paypal_failure
-from app.schemas.payments import (
-    AuthorizeOrderRequest,
-    CaptureAuthorizationRequest,
-    CreateOrderRequest,
-    InvalidPaymentRequest,
-)
+from app.payments.paypal import PayPalClient
+from app.security import get_current_user, require_csrf
+from app.services import payments, workflow
+from app.services.events import deliver_pending
 
-router = APIRouter()
+router = APIRouter(tags=["payments"])
 
 
-def get_paypal_client() -> PayPalClient:
-    return PayPalClient()
-
-
-async def _request_body(request: Request) -> tuple[Any, bool]:
-    content_type = (
-        request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    )
-    if content_type != "application/json" and not content_type.endswith("+json"):
-        return {}, True
+def _domain(callable_, *args, **kwargs):
     try:
-        raw_body = await request.body()
-        if not raw_body.strip():
-            return {}, True
-        if len(raw_body) > 32 * 1024:
-            return None, False
-        payload = json.loads(raw_body)
-        if not isinstance(payload, (dict, list)):
-            return None, False
-        return payload, True
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return None, False
+        return callable_(*args, **kwargs)
+    except workflow.DomainError as error:
+        raise HTTPException(error.status_code, error.detail) from error
 
 
-def _invalid_request(error: InvalidPaymentRequest) -> JSONResponse:
-    if str(error) == "Milestone approval is required before capture":
-        return JSONResponse(status_code=403, content={"error": str(error)})
-    return JSONResponse(status_code=400, content={"error": str(error)})
+def _approval_url(data: dict) -> str | None:
+    for item in data.get("links", []) or []:
+        if not isinstance(item, dict) or item.get("rel") != "approve":
+            continue
+        value = item.get("href")
+        parsed = urlsplit(value or "")
+        if parsed.scheme == "https" and parsed.hostname and (parsed.hostname == "paypal.com" or parsed.hostname.endswith(".paypal.com")):
+            return value
+    return None
 
 
-@router.get("/paypal/test-auth")
-async def test_paypal_auth(
-    paypal: PayPalClient = Depends(get_paypal_client),
-) -> JSONResponse:
-    try:
-        await paypal.test_auth()
-        return JSONResponse(
-            content={"success": True, "message": "Authenticated with PayPal"}
-        )
-    except Exception as error:
-        log_paypal_failure("paypal.auth.failed", error)
-        return JSONResponse(
-            status_code=502,
-            content={"success": False, "error": "PayPal authentication failed"},
-        )
-
-
-@router.post("/paypal/create-order")
-async def create_order(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    paypal: PayPalClient = Depends(get_paypal_client),
-) -> JSONResponse:
-    try:
-        payload, valid_json = await _request_body(request)
-        if not valid_json:
-            return JSONResponse(status_code=400, content={"error": "Invalid request"})
-        payment = CreateOrderRequest.from_payload(payload)
-    except InvalidPaymentRequest as error:
-        return _invalid_request(error)
-    try:
-        response, data = await paypal.create_order(payment.amount, payment.currency)
-        if not response.is_success:
-            return JSONResponse(
-                status_code=502,
-                content={
-                    "error": "PayPal order creation failed",
-                    "paypalStatus": response.status_code,
-                },
-            )
-        links = data.get("links") or []
-        approval_url = next(
-            (
-                link.get("href")
-                for link in links
-                if isinstance(link, dict) and link.get("rel") == "approve"
-            ),
-            None,
-        )
-        response_body: dict[str, Any] = {
-            "message": "PayPal order created",
-            "approvalUrl": approval_url,
+@router.post("/milestones/{milestone_id}/payment/order", status_code=201)
+async def create_order(milestone_id: str, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
+    payment = _domain(payments.prepare_order, user, milestone_id)
+    if payment.get("paypal_order_id"):
+        return {
+            "payment_id": str(payment["id"]),
+            "order_id": payment["paypal_order_id"],
+            "approval_url": payment.get("paypal_approval_url"),
+            "status": payment["status"],
         }
-        if "id" in data:
-            response_body["orderId"] = data["id"]
-        if "status" in data:
-            response_body["status"] = data["status"]
-        background_tasks.add_task(
-            send_event,
-            "payment.order_created",
-            {
-                "order_id": data.get("id"),
-                "status": data.get("status"),
-                "amount": str(payment.amount),
-                "currency": payment.currency,
-            },
-        )
-        return JSONResponse(
-            status_code=201,
-            content=response_body,
-        )
+    paypal = PayPalClient()
+    try:
+        response, data = await paypal.create_order(payment["amount"], payment["currency"].strip(), payment["create_request_id"])
     except Exception as error:
-        log_paypal_failure("paypal.order.create.failed", error)
-        return JSONResponse(
-            status_code=502, content={"error": "Could not create PayPal order"}
-        )
+        log_event("error", "payment.order.create.unknown", error=type(error).__name__)
+        raise HTTPException(502, "PayPal order result is unknown; retry this operation to reconcile the same request") from error
+    if not response.is_success:
+        raise HTTPException(502, "PayPal order creation failed")
+    approval = _approval_url(data)
+    if not approval:
+        raise HTTPException(502, "PayPal did not return a valid approval link")
+    saved = _domain(payments.save_order, str(payment["id"]), data, approval)
+    background_tasks.add_task(deliver_pending)
+    return {"payment_id": str(saved["id"]), "order_id": saved["paypal_order_id"], "approval_url": approval, "status": saved["status"]}
 
 
-@router.post("/paypal/authorize-order")
-async def authorize_order(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    paypal: PayPalClient = Depends(get_paypal_client),
-) -> JSONResponse:
+@router.post("/milestones/{milestone_id}/payment/authorize")
+async def authorize_order(milestone_id: str, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
+    payment = _domain(payments.payment_for_client, user, milestone_id)
+    if payment["status"] == "authorized" and payment.get("paypal_authorization_id"):
+        return {"status": "authorized", "authorization_id": payment["paypal_authorization_id"]}
+    if not payment.get("paypal_order_id"):
+        raise HTTPException(409, "Create the PayPal order before authorizing")
+    paypal = PayPalClient()
     try:
-        payload, valid_json = await _request_body(request)
-        if not valid_json:
-            return JSONResponse(status_code=400, content={"error": "Invalid request"})
-        payment = AuthorizeOrderRequest.from_payload(payload)
-    except InvalidPaymentRequest as error:
-        return _invalid_request(error)
-    try:
-        response, data = await paypal.authorize_order(payment.order_id)
-        if not response.is_success:
-            return JSONResponse(
-                status_code=502,
-                content={
-                    "error": "PayPal authorization failed",
-                    "paypalStatus": response.status_code,
-                },
-            )
-        purchase_units = data.get("purchase_units") or []
-        first_unit = (
-            purchase_units[0]
-            if purchase_units and isinstance(purchase_units[0], dict)
-            else {}
-        )
-        payments = first_unit.get("payments") or {}
-        authorizations = payments.get("authorizations") or []
-        authorization = (
-            authorizations[0]
-            if authorizations and isinstance(authorizations[0], dict)
-            else {}
-        )
-        response_body: dict[str, Any] = {
-            "message": "PayPal authorization response received",
-            "authorizationId": authorization.get("id"),
-            "authorizationStatus": authorization.get("status"),
-            "amount": authorization.get("amount"),
-        }
-        if "id" in data:
-            response_body["orderId"] = data["id"]
-        if "status" in data:
-            response_body["orderStatus"] = data["status"]
-        background_tasks.add_task(
-            send_event,
-            "payment.authorized",
-            {
-                "order_id": data.get("id", payment.order_id),
-                "authorization_id": authorization.get("id"),
-                "status": authorization.get("status"),
-                "amount": authorization.get("amount"),
-            },
-        )
-        return JSONResponse(content=response_body)
+        order_response, order = await paypal.get_order(payment["paypal_order_id"])
+        if not order_response.is_success:
+            raise HTTPException(502, "Could not confirm PayPal buyer approval")
+        existing_auth = _extract_authorization(order)
+        if existing_auth:
+            data = order
+            response = order_response
+            auth = existing_auth
+        elif order.get("status") != "APPROVED":
+            raise HTTPException(409, "PayPal has not confirmed buyer approval")
+        else:
+            _domain(payments.set_buyer_approved, user, milestone_id)
+            response, data = await paypal.authorize_order(payment["paypal_order_id"], payment["authorize_request_id"])
+            if not response.is_success:
+                raise HTTPException(502, "PayPal authorization failed")
+            auth = _extract_authorization(data)
+    except HTTPException:
+        raise
     except Exception as error:
-        log_paypal_failure("paypal.order.authorize.failed", error)
-        return JSONResponse(
-            status_code=502, content={"error": "Could not authorize PayPal order"}
-        )
-
-
-@router.post("/paypal/capture-authorization")
-async def capture_authorization(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    paypal: PayPalClient = Depends(get_paypal_client),
-) -> JSONResponse:
+        log_event("error", "payment.authorization.unknown", error=type(error).__name__)
+        raise HTTPException(502, "PayPal authorization result is unknown; retry the same operation to reconcile") from error
+    if not response.is_success or auth is None:
+        raise HTTPException(502, "PayPal did not confirm an authorization")
+    amount_data = auth.get("amount") or {}
     try:
-        payload, valid_json = await _request_body(request)
-        if not valid_json:
-            return JSONResponse(status_code=400, content={"error": "Invalid request"})
-        payment = CaptureAuthorizationRequest.from_payload(payload)
-    except InvalidPaymentRequest as error:
-        return _invalid_request(error)
+        amount = Decimal(str(amount_data.get("value")))
+    except InvalidOperation as error:
+        raise HTTPException(502, "PayPal authorization did not include a valid amount") from error
+    saved = _domain(payments.mark_authorized, user, milestone_id, auth.get("id"), amount, amount_data.get("currency_code", ""), auth.get("status", ""))
+    background_tasks.add_task(deliver_pending)
+    return {"status": saved["status"], "authorization_id": saved["paypal_authorization_id"]}
+
+
+def _extract_authorization(data: dict) -> dict | None:
+    units = data.get("purchase_units") or []
+    for unit in units:
+        if not isinstance(unit, dict):
+            continue
+        auths = (unit.get("payments") or {}).get("authorizations") or []
+        for item in auths:
+            if isinstance(item, dict) and item.get("id"):
+                return item
+    return None
+
+
+@router.post("/milestones/{milestone_id}/payment/capture")
+async def capture_authorization(milestone_id: str, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
+    existing = _domain(payments.payment_for_client, user, milestone_id)
+    if existing["status"] == "authorized":
+        try:
+            auth_response, authorization = await PayPalClient().get_authorization(existing["paypal_authorization_id"])
+        except Exception as error:
+            log_event("error", "payment.authorization.check.failed", error=type(error).__name__)
+            raise HTTPException(502, "Could not confirm authorization eligibility") from error
+        if not auth_response.is_success or authorization.get("status") != "CREATED":
+            raise HTTPException(409, "PayPal does not report an active authorization; reconcile the payment status")
+        amount = authorization.get("amount") or {}
+        try:
+            eligible_amount = Decimal(str(amount.get("value"))) == existing["amount"]
+        except InvalidOperation:
+            eligible_amount = False
+        expiration = authorization.get("expiration_time")
+        if not isinstance(expiration, str) or not expiration:
+            raise HTTPException(409, "PayPal authorization expiry could not be verified")
+        try:
+            expires_at = datetime.fromisoformat(expiration.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(409, "PayPal authorization expiry could not be verified")
+        if expires_at.tzinfo is None or expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(409, "PayPal authorization has expired")
+        if not eligible_amount or amount.get("currency_code") != existing["currency"].strip():
+            raise HTTPException(409, "PayPal authorization amount no longer matches the milestone")
+    payment = _domain(payments.begin_capture, user, milestone_id)
+    if payment["status"] == "captured":
+        return {"status": "captured", "capture_id": payment.get("paypal_capture_id")}
+    paypal = PayPalClient()
     try:
         response, data = await paypal.capture_authorization(
-            payment.authorization_id, payment.amount, payment.currency
+            payment["paypal_authorization_id"], payment["amount"], payment["currency"].strip(), payment["capture_request_id"]
         )
-        if not response.is_success:
-            return JSONResponse(
-                status_code=502,
-                content={
-                    "error": "PayPal capture failed",
-                    "paypalStatus": response.status_code,
-                },
-            )
-        response_body: dict[str, Any] = {"message": "PayPal capture response received"}
-        response_keys = {"id": "captureId", "status": "status", "amount": "amount"}
-        for key in ("id", "status", "amount"):
-            if key in data:
-                response_body[response_keys[key]] = data[key]
-        background_tasks.add_task(
-            send_event,
-            "payment.captured",
-            {
-                "capture_id": data.get("id"),
-                "status": data.get("status"),
-                "amount": data.get("amount"),
-            },
-        )
-        return JSONResponse(content=response_body)
     except Exception as error:
-        log_paypal_failure("paypal.authorization.capture.failed", error)
-        return JSONResponse(
-            status_code=502, content={"error": "Could not capture PayPal authorization"}
-        )
+        log_event("error", "payment.capture.unknown", error=type(error).__name__)
+        _domain(payments.finish_capture, str(payment["id"]), {}, "PayPal capture response was not confirmed; reconciliation required")
+        return JSONResponse(status_code=202, content={"status": "capture_pending", "message": "PayPal outcome must be reconciled before another capture"})
+    if not response.is_success:
+        _domain(payments.finish_capture, str(payment["id"]), {}, f"PayPal returned HTTP {response.status_code}; reconciliation required")
+        return JSONResponse(status_code=202, content={"status": "capture_pending", "message": "PayPal outcome must be reconciled before another capture"})
+    saved = _domain(payments.finish_capture, str(payment["id"]), data)
+    if saved["status"] != "captured":
+        return JSONResponse(status_code=202, content={"status": "capture_pending", "message": "PayPal has not confirmed a completed capture"})
+    background_tasks.add_task(deliver_pending)
+    return {"status": "captured", "capture_id": saved["paypal_capture_id"]}
+
+
+def _walk_captures(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "captures" and isinstance(child, list):
+                yield from (item for item in child if isinstance(item, dict))
+            else:
+                yield from _walk_captures(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_captures(child)
+
+
+@router.post("/milestones/{milestone_id}/payment/reconcile")
+async def reconcile_capture(milestone_id: str, user: dict = Depends(require_csrf)):
+    payment = _domain(payments.payment_for_client, user, milestone_id)
+    if payment["status"] != "capture_pending" or not payment.get("paypal_order_id"):
+        raise HTTPException(409, "This payment does not need reconciliation")
+    response, order = await PayPalClient().get_order(payment["paypal_order_id"])
+    if not response.is_success:
+        raise HTTPException(502, "Could not reconcile PayPal order")
+    capture = next((item for item in _walk_captures(order) if item.get("status") == "COMPLETED"), None)
+    if capture is None:
+        return JSONResponse(status_code=202, content={"status": "capture_pending", "message": "PayPal has not reported a completed capture yet"})
+    saved = _domain(payments.mark_reconciled_capture, user, milestone_id, capture)
+    return {"status": saved["status"], "capture_id": saved["paypal_capture_id"]}
+
+
+@router.post("/webhooks/paypal")
+async def paypal_webhook(request: Request, background_tasks: BackgroundTasks):
+    if request.headers.get("content-length", "0").isdigit() and int(request.headers["content-length"]) > 1_000_000:
+        raise HTTPException(413, "Webhook payload is too large")
+    raw = await request.body()
+    if len(raw) > 1_000_000:
+        raise HTTPException(413, "Webhook payload is too large")
+    try:
+        event = await request.json()
+    except Exception as error:
+        raise HTTPException(400, "Invalid webhook payload") from error
+    if not isinstance(event, dict) or not isinstance(event.get("id"), str) or not event["id"]:
+        raise HTTPException(400, "Invalid PayPal event")
+    headers = {key.lower(): value for key, value in request.headers.items()}
+    required = ("paypal-auth-algo", "paypal-cert-url", "paypal-transmission-id", "paypal-transmission-sig", "paypal-transmission-time")
+    if any(not headers.get(key) for key in required):
+        raise HTTPException(400, "PayPal signature headers are missing")
+    try:
+        verified = await PayPalClient().verify_webhook(headers, event)
+    except RuntimeError as error:
+        log_event("error", "paypal.webhook.verification_unavailable", error=type(error).__name__)
+        raise HTTPException(503, "Webhook verification is not configured") from error
+    except Exception as error:
+        log_event("error", "paypal.webhook.verification_failed", error=type(error).__name__)
+        raise HTTPException(502, "PayPal webhook verification failed") from error
+    if not verified:
+        raise HTTPException(400, "PayPal webhook signature was not verified")
+    claimed = _domain(payments.store_webhook, event, True)
+    if not claimed:
+        return {"received": True, "duplicate": True}
+    processed = True
+    try:
+        if event.get("event_type") == "PAYMENT.CAPTURE.COMPLETED":
+            resource = event.get("resource") or {}
+            related = (resource.get("supplementary_data") or {}).get("related_ids") or {}
+            order_id = related.get("order_id")
+            amount_data = resource.get("amount") or {}
+            try:
+                processed = bool(order_id and resource.get("id") and resource.get("status") == "COMPLETED" and payments.find_capture_by_order(order_id, resource["id"], Decimal(str(amount_data.get("value"))), amount_data.get("currency_code", "")))
+            except (InvalidOperation, TypeError):
+                processed = False
+        _domain(payments.complete_webhook, event["id"], processed)
+    except Exception:
+        _domain(payments.complete_webhook, event["id"], False)
+        raise
+    background_tasks.add_task(deliver_pending)
+    return {"received": True, "processed": processed}

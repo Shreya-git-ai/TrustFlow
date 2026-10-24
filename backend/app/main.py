@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-from datetime import timezone
 import os
 import time
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.agent.api import router as agent_router
-from app.db.connection import apply_schema, test_connection
+from app.db.connection import test_connection
 from app.observability import log_event, parse_traceparent, request_trace
-from app.routers.assessments import router as assessments_router
+from app.routers.auth import router as auth_router
 from app.routers.payments import router as payments_router
+from app.routers.workflow import router as workflow_router
+from app.security import get_current_user
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
@@ -51,17 +51,21 @@ cors_origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "traceparent"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "traceparent", "x-csrf-token"],
+    allow_credentials=True,
 )
 _configure_elastic_apm(app)
+app.include_router(auth_router)
+app.include_router(workflow_router)
 app.include_router(payments_router)
-app.include_router(assessments_router)
-app.include_router(agent_router)
 
 
 @app.middleware("http")
 async def add_trace_context(request: Request, call_next):
+    content_length = request.headers.get("content-length", "")
+    if content_length.isdigit() and int(content_length) > 15_000_000:
+        return JSONResponse(status_code=413, content={"detail": "Request body is too large"})
     trace_id = parse_traceparent(request.headers.get("traceparent"))
     async with request_trace(trace_id) as context:
         started = context.started_at
@@ -89,64 +93,32 @@ async def add_trace_context(request: Request, call_next):
         return response
 
 
+@app.exception_handler(Exception)
+async def sanitized_unexpected_error(request: Request, error: Exception) -> JSONResponse:
+    log_event("error", "http.unhandled_exception", method=request.method, path=request.url.path, error=type(error).__name__)
+    return JSONResponse(status_code=500, content={"error": "Internal server error"})
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "TrustFlow API"}
 
 
-@app.get("/db/test")
-def database_health() -> JSONResponse:
+@app.get("/agent/health")
+async def agent_health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+def readiness(_user: dict = Depends(get_current_user)) -> JSONResponse:
     try:
-        database_name, database_time = test_connection()
+        test_connection()
     except Exception as error:
         log_event("error", "database.connection.failed", error=type(error).__name__)
         return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "error": "Database connection failed. Check DATABASE_URL.",
-            },
+            status_code=503, content={"ready": False, "error": "Storage is unavailable"}
         )
-    return JSONResponse(
-        content={
-            "success": True,
-            "message": "Connected to Neon PostgreSQL",
-            "database": database_name,
-            "databaseTime": database_time.astimezone(timezone.utc)
-            .isoformat()
-            .replace("+00:00", "Z"),
-        }
-    )
-
-
-@app.post("/db/setup-schema")
-def setup_database_schema() -> JSONResponse:
-    try:
-        apply_schema()
-    except Exception as error:
-        log_event("error", "database.schema.setup.failed", error=type(error).__name__)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "error": "Schema setup failed. Check DATABASE_URL.",
-            },
-        )
-    return JSONResponse(
-        content={
-            "success": True,
-            "message": "TrustFlow database schema created",
-            "tables": [
-                "users",
-                "projects",
-                "milestones",
-                "evidence",
-                "payments",
-                "audit_events",
-                "webhook_events",
-            ],
-        }
-    )
+    return JSONResponse(content={"ready": True})
 
 
 if __name__ == "__main__":

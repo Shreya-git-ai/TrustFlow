@@ -11,11 +11,10 @@ def verify(inp: AssessmentInput, out: ModelOutput) -> list[str]:
     got = sorted(v.criterion_id for v in out.verdicts)
     if got != expected:
         problems.append(f"verdicts must cover exactly criterion ids {expected}, got {got}")
-    evidence = _norm(inp.evidence_text)
     for v in out.verdicts:
-        if v.verdict == Verdict.SUPPORTED:
+        if v.verdict in {Verdict.MET, Verdict.SUPPORTED}:
             if not v.quote:
                 problems.append(f"criterion {v.criterion_id}: supported but no quote")
-            elif _norm(v.quote) not in evidence:
+            elif v.quote not in inp.evidence_text:
                 problems.append(f"criterion {v.criterion_id}: quote not found in evidence")
     return problems

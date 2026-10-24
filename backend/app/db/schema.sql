@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS milestones (
     title TEXT NOT NULL,
     acceptance_criteria JSONB NOT NULL DEFAULT '[]'::jsonb,
     amount NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
+    currency CHAR(3) NOT NULL DEFAULT 'USD',
     due_at TIMESTAMPTZ,
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN (

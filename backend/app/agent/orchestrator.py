@@ -48,7 +48,7 @@ def run_assessment(inp: AssessmentInput, provider: ModelProvider) -> AssessmentR
         try:
             raw = provider.complete_json(SYSTEM_PROMPT, user_prompt)
         except Exception as e:                      # timeout, network, auth, ...
-            return _result(provider, started, attempt, "provider_error", error=str(e)[:200])
+            return _result(provider, started, attempt, "provider_error", error=f"{type(e).__name__}: assessment provider failed")
 
         try:
             out = ModelOutput.model_validate(json.loads(_strip_fences(raw)))
@@ -61,13 +61,20 @@ def run_assessment(inp: AssessmentInput, provider: ModelProvider) -> AssessmentR
             continue
 
         # Code, not the model, computes the summary fields.
-        not_ok = [v for v in out.verdicts if v.verdict != Verdict.SUPPORTED]
+        passing = {Verdict.MET, Verdict.SUPPORTED}
+        not_ok = [v for v in out.verdicts if v.verdict not in passing]
+        limitations = []
+        if inp.evidence_links:
+            limitations.append("Reference links were supplied as text and were not opened or verified.")
+        all_met = not not_ok
         assessment = Assessment(
             milestone_id=inp.milestone_id,
             evidence_revision=inp.evidence_revision,
             verdicts=out.verdicts,
-            all_supported=not not_ok,
+            all_supported=all_met,
             blockers=[f"Criterion {v.criterion_id}: {v.requested_revision or v.reasoning}" for v in not_ok],
+            overall_summary=f"{len(out.verdicts) - len(not_ok)} of {len(out.verdicts)} criteria are marked met based on the supplied text.",
+            limitations=limitations,
         )
         return _result(provider, started, attempt, "ok", assessment=assessment)
 

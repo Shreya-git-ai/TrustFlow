@@ -22,7 +22,7 @@ def enforce_guards(inp: AssessmentInput, result: AssessmentResult) -> Assessment
         return _invalid(result, f"criteria coverage mismatch: expected {expected}, got {got}")
 
     for v in a.verdicts:
-        if v.verdict == Verdict.SUPPORTED and not v.quote:
+        if v.verdict in {Verdict.MET, Verdict.SUPPORTED} and not v.quote:
             return _invalid(result, f"criterion {v.criterion_id} supported without a quote")
         if v.quote and v.quote not in inp.evidence_text:
             return _invalid(result, f"criterion {v.criterion_id} quote not found in evidence")

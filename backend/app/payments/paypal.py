@@ -21,10 +21,10 @@ class PayPalClient:
             "PAYPAL_BASE_URL", "https://api-m.sandbox.paypal.com"
         ).rstrip("/")
         self.return_url = os.getenv(
-            "PAYPAL_RETURN_URL", "http://localhost:3000/paypal/return"
+            "PAYPAL_RETURN_URL", "http://localhost:5173/payment-return"
         )
         self.cancel_url = os.getenv(
-            "PAYPAL_CANCEL_URL", "http://localhost:3000/paypal/cancel"
+            "PAYPAL_CANCEL_URL", "http://localhost:5173/payment-cancel"
         )
 
     async def _request(
@@ -83,7 +83,7 @@ class PayPalClient:
         await self.get_access_token()
 
     async def create_order(
-        self, amount: Decimal, currency: str
+        self, amount: Decimal, currency: str, request_id: str | None = None
     ) -> tuple[httpx.Response, dict[str, Any]]:
         access_token = await self.get_access_token()
         return await self._request(
@@ -92,7 +92,7 @@ class PayPalClient:
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
-                "PayPal-Request-Id": str(uuid4()),
+                "PayPal-Request-Id": request_id or str(uuid4()),
             },
             json_body={
                 "intent": "AUTHORIZE",
@@ -114,7 +114,7 @@ class PayPalClient:
         )
 
     async def authorize_order(
-        self, order_id: str
+        self, order_id: str, request_id: str | None = None
     ) -> tuple[httpx.Response, dict[str, Any]]:
         access_token = await self.get_access_token()
         return await self._request(
@@ -123,12 +123,13 @@ class PayPalClient:
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
-                "PayPal-Request-Id": str(uuid4()),
+                "PayPal-Request-Id": request_id or str(uuid4()),
             },
         )
 
     async def capture_authorization(
-        self, authorization_id: str, amount: Decimal | None, currency: str
+        self, authorization_id: str, amount: Decimal | None, currency: str,
+        request_id: str | None = None,
     ) -> tuple[httpx.Response, dict[str, Any]]:
         access_token = await self.get_access_token()
         capture_body: dict[str, Any] = {}
@@ -143,10 +144,48 @@ class PayPalClient:
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
-                "PayPal-Request-Id": str(uuid4()),
+                "PayPal-Request-Id": request_id or str(uuid4()),
             },
             json_body=capture_body,
         )
+
+    async def get_order(self, order_id: str) -> tuple[httpx.Response, dict[str, Any]]:
+        access_token = await self.get_access_token()
+        return await self._request(
+            f"/v2/checkout/orders/{order_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+    async def get_authorization(self, authorization_id: str) -> tuple[httpx.Response, dict[str, Any]]:
+        access_token = await self.get_access_token()
+        return await self._request(
+            f"/v2/payments/authorizations/{authorization_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+    async def verify_webhook(self, headers: dict[str, str], event: dict[str, Any]) -> bool:
+        webhook_id = os.getenv("PAYPAL_WEBHOOK_ID", "")
+        if not webhook_id:
+            raise RuntimeError("PAYPAL_WEBHOOK_ID is not configured")
+        access_token = await self.get_access_token()
+        response, data = await self._request(
+            "/v1/notifications/verify-webhook-signature",
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            json_body={
+                "auth_algo": headers.get("paypal-auth-algo"),
+                "cert_url": headers.get("paypal-cert-url"),
+                "transmission_id": headers.get("paypal-transmission-id"),
+                "transmission_sig": headers.get("paypal-transmission-sig"),
+                "transmission_time": headers.get("paypal-transmission-time"),
+                "webhook_id": webhook_id,
+                "webhook_event": event,
+            },
+        )
+        return response.is_success and data.get("verification_status") == "SUCCESS"
 
 
 def log_paypal_failure(event: str, error: Exception) -> None:

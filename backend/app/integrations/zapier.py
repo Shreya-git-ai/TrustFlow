@@ -10,7 +10,7 @@ import httpx
 from app.observability import log_event
 
 
-async def send_event(event: str, data: dict[str, Any]) -> None:
+async def send_event(event: str, data: dict[str, Any]) -> bool:
     """Send a small event to a configured Zapier Catch Hook.
 
     Delivery is best-effort for this prototype. Do not include evidence text,
@@ -18,7 +18,7 @@ async def send_event(event: str, data: dict[str, Any]) -> None:
     """
     webhook_url = os.getenv("ZAPIER_WEBHOOK_URL")
     if not webhook_url:
-        return
+        return False
 
     payload = {
         "event": event,
@@ -31,7 +31,7 @@ async def send_event(event: str, data: dict[str, Any]) -> None:
                 response = await client.post(webhook_url, json=payload)
             if response.is_success:
                 log_event("info", "integration.zapier.delivered", eventName=event)
-                return
+                return True
             if response.status_code < 500 and response.status_code != 429:
                 log_event(
                     "warning",
@@ -39,7 +39,7 @@ async def send_event(event: str, data: dict[str, Any]) -> None:
                     eventName=event,
                     statusCode=response.status_code,
                 )
-                return
+                return False
         except httpx.HTTPError as error:
             if attempt == 3:
                 log_event(
@@ -48,9 +48,10 @@ async def send_event(event: str, data: dict[str, Any]) -> None:
                     eventName=event,
                     error=type(error).__name__,
                 )
-                return
+                return False
 
         if attempt < 3:
             await asyncio.sleep(0.25 * (2 ** (attempt - 1)))
 
     log_event("warning", "integration.zapier.failed", eventName=event)
+    return False

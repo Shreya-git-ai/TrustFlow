@@ -63,15 +63,13 @@ class PaymentRequestSchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidPaymentRequest, "orderId"):
             AuthorizeOrderRequest.from_payload({"orderId": "bad/id"})
 
-    def test_capture_requires_milestone_approval(self):
-        with self.assertRaisesRegex(InvalidPaymentRequest, "approval is required"):
-            CaptureAuthorizationRequest.from_payload(
-                {"authorizationId": "AUTH123", "milestoneApproved": False}
-            )
+    def test_capture_schema_does_not_accept_a_caller_approval_as_authority(self):
+        parsed = CaptureAuthorizationRequest.from_payload({"authorizationId": "AUTH123", "milestoneApproved": True})
+        self.assertEqual(parsed.authorization_id, "AUTH123")
 
     def test_capture_without_amount_uses_authorized_remaining_amount(self):
         parsed = CaptureAuthorizationRequest.from_payload(
-            {"authorizationId": "AUTH123", "milestoneApproved": True}
+            {"authorizationId": "AUTH123"}
         )
         self.assertIsNone(parsed.amount)
         self.assertEqual(parsed.currency, "USD")
@@ -80,7 +78,6 @@ class PaymentRequestSchemaTests(unittest.TestCase):
         parsed = CaptureAuthorizationRequest.from_payload(
             {
                 "authorizationId": "AUTH123",
-                "milestoneApproved": True,
                 "amount": 5,
                 "currency": None,
             }
