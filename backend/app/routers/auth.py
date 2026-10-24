@@ -6,7 +6,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from app.security import SESSION_COOKIE, get_current_user, require_csrf, set_session_cookie
+from app.security import SESSION_COOKIE, allowed_origins, get_current_user, require_csrf, set_session_cookie
 from app.services import auth
 from app.services.email import email_delivery_configured, send_verification_email
 
@@ -45,12 +45,7 @@ def _check_origin(request: Request) -> None:
     origin = request.headers.get("origin")
     if not origin:
         return
-    allowed = {
-        item.strip()
-        for item in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
-        if item.strip()
-    }
-    if origin not in allowed:
+    if origin.rstrip("/") not in allowed_origins():
         raise HTTPException(status_code=403, detail="Origin is not allowed")
 
 

@@ -1,132 +1,141 @@
 # TrustFlow
 
-**AI-assisted milestone payment coordination**
+TrustFlow helps clients and freelancers coordinate milestone terms, evidence, AI assisted review, human approval, and PayPal payments. It is a prototype: AI reports findings, while only the authenticated project client can approve a milestone. TrustFlow does not provide legal escrow.
 
-TrustFlow is an early-stage project exploring how agents can help clients and freelancers coordinate milestone progress, evidence review, approval, and payments. PayPal is the payment provider for the current backend prototype.
+## How the workflow works
 
-## Project structure
+1. A client creates a project and invites a freelancer who already has a TrustFlow account.
+2. The freelancer accepts the invitation. The client defines milestone criteria, amount, currency, and deadline.
+3. The freelancer submits a revision with text, HTTP(S) reference links, and optionally a private file.
+4. The client asks Gemini to assess the current revision against the saved criteria. The report is stored with criterion-level findings and an audit record.
+5. The client requests changes or explicitly approves the current revision.
+6. PayPal Sandbox order, buyer approval, authorization, capture, and reconciliation are handled separately from the AI report.
 
-- `backend/` — FastAPI application and PostgreSQL schema.
-- `frontend/` — React and TypeScript evidence review console.
-- `docs/` — architecture and demo notes.
+Assessment considers only the submitted text. Reference links are not opened. PDF, image, and text attachments can be uploaded and downloaded by project members, but file contents are not extracted or assessed. Reports disclose this limitation.
 
-The frontend submits evidence to the backend assessment endpoint and displays verified criterion results.
+## Repository map
 
-## Run the backend
+- `backend/app/main.py` — FastAPI app, CORS, request tracing, health checks, and router registration.
+- `backend/app/routers/` — authenticated HTTP endpoints for accounts, projects, evidence, reviews, decisions, payments, and PayPal webhooks.
+- `backend/app/services/` — account, workflow, payment, private-file, and integration-outbox logic.
+- `backend/app/agent/` — Gemini prompt, provider, orchestration, output checks, and offline evaluation cases.
+- `backend/app/db/` — shared PostgreSQL connection boundary, base schema, and additive migrations.
+- `backend/app/payments/paypal.py` — PayPal Sandbox HTTP client.
+- `backend/tests/` — unit and mocked API/provider tests.
+- `frontend/` — responsive React/TypeScript workspace.
+- `postman/TrustFlow.postman_collection.json` — API requests and starter assertions.
+- `render.yaml` — Render service blueprint; it describes deployment and does not deploy anything by itself.
+- `docs/` — current architecture, safety limits, and demo steps. `MIGRATION_AUDIT.md` is a historical audit snapshot.
 
-Use Python 3.10 or newer. From the repository root, create the root-level `venv` once (skip the first command if it already exists), activate it, and install backend requirements:
+## Local setup
+
+Use Python 3.10 or newer and Node.js 20.19+ or 22.12+.
+
+Create the root virtual environment and install backend dependencies:
 
 ```bash
-python3 -m venv venv       # skip if the root venv already exists
-source venv/bin/activate        # Windows: venv\Scripts\activate
+python3 -m venv venv
+source venv/bin/activate       # Windows: venv\Scripts\activate
 python -m pip install -r backend/requirements.txt
+```
+
+Create `backend/.env` from `backend/.env.example` only if it does not already exist. Add your PostgreSQL URL. To use assessments, set `GEMINI_API_KEY` and `TRUSTFLOW_MODEL`. For PayPal, set Sandbox `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`. Never commit `.env` or copy its values into the example file.
+
+Apply the base schema and additive MVP migration explicitly:
+
+```bash
 cd backend
+../venv/bin/python scripts/setup_db.py
 ```
-
-Create `backend/.env` from `.env.example` only if it does not already exist. Otherwise, edit the existing file so you do not overwrite your local settings. For Gemini assessment, set:
-
-```dotenv
-GEMINI_API_KEY=your-Google-AI-Studio-key
-TRUSTFLOW_MODEL=gemini-3.6-flash
-TRUSTFLOW_FALLBACK_MODEL=
-```
-
-`gemini-3.6-flash` is the model used in the latest successful local assessment check. The fallback is optional; set it to a different model available to your Gemini API key to use it after transient provider errors. See Google's [Gemini API model list](https://ai.google.dev/gemini-api/docs/models). Keep the API key in `backend/.env` and do not commit it.
 
 Start the API from `backend/`:
 
 ```bash
-python -m app.main
+../venv/bin/python -m app.main
 ```
 
-It listens on port 3000 by default, or the value of `PORT` in `.env`. Check it at `http://localhost:3000/health`. The assessment endpoint is `POST http://localhost:3000/assessments`; it needs the Gemini settings above, but does not require the database or PayPal credentials. `PAYPAL_BASE_URL` defaults to PayPal sandbox; use live credentials and PayPal's live API URL only when deliberately configuring a production deployment.
+It listens on port 3000 by default. `GET http://localhost:3000/health` is public; readiness and product data require a session. The database migration is not applied automatically at app startup.
 
-## Run the frontend
-
-Use Node.js 20.19+ or 22.12+. In a separate terminal from the repository root:
+In a second terminal, start the frontend:
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-Open the local URL printed by Vite (usually `http://localhost:5173`). The frontend proxies `/api` requests to `http://localhost:3000`, so start the backend in a separate terminal to check its connection and submit assessments.
+Vite serves the app at `http://localhost:5173` and proxies `/api` to the local backend. Create one client account and one freelancer account. The client enters the freelancer’s registered email to create the invitation; the freelancer signs in separately and accepts it.
 
-Run the backend tests from `backend/` with `python -m unittest discover -s tests -v`. Route tests use a stub PayPal client and do not contact PayPal.
+## Environment variables
 
-The database schema is in `backend/app/db/schema.sql`. After reviewing the target database and setting `DATABASE_URL`, the compatibility endpoint `POST /db/setup-schema` applies its idempotent `CREATE TABLE/INDEX IF NOT EXISTS` statements. This integration does not run it automatically. `GET /db/test` checks connectivity.
+`backend/.env.example` lists every setting. Main settings:
 
-## Current API
+- `DATABASE_URL` — PostgreSQL connection string.
+- `GEMINI_API_KEY`, `TRUSTFLOW_MODEL`, optional `TRUSTFLOW_FALLBACK_MODEL` — AI assessment provider.
+- `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, optional `PAYPAL_BASE_URL` — PayPal; Sandbox is the default.
+- `PAYPAL_WEBHOOK_ID` — registered webhook ID required for signature verification.
+- `PAYPAL_RETURN_URL`, `PAYPAL_CANCEL_URL` — frontend callback pages.
+- `CORS_ORIGINS` — exact frontend origins, comma separated.
+- `TRUSTFLOW_ENV` — set to `production` when deployed; this enables Secure session cookies.
+- `SESSION_HASH_SALT` — generate a unique random value for production.
+- `TRUSTFLOW_UPLOAD_DIR` — private file storage directory. Use persistent storage in deployments.
+- `TRUSTFLOW_FRONTEND_URL` — base URL used for verification and project invitation links.
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_USE_SSL`, `SMTP_USE_STARTTLS` — optional SMTP delivery. When configured, signup requires email confirmation and project invitations also send an email. Configure these on the backend only; never commit SMTP credentials.
+- `ZAPIER_WEBHOOK_URL` — optional Catch Hook; events are placed in a PostgreSQL outbox and retried.
+- `ELASTIC_APM_SERVER_URL`, optional `ELASTIC_APM_SECRET_TOKEN` — optional monitoring.
 
-- `GET /health`
-- `GET /agent/health`
-- `POST /agent/assess` — guarded assessment route with in-memory idempotency for matching milestone revisions; changed content for the same revision returns `409`.
-- `GET /paypal/test-auth`
-- `POST /paypal/create-order` — body: `{"amount": 10, "currency": "USD"}`; both fields are optional and default to 10 USD.
-- `POST /paypal/authorize-order` — body: `{"orderId": "..."}`.
-- `POST /paypal/capture-authorization` — body: `{"authorizationId": "...", "milestoneApproved": true}`. `amount` and `currency` may also be supplied for a final capture amount.
-- `POST /assessments` — Gemini assessment used by the frontend. Configure `GEMINI_API_KEY` and `TRUSTFLOW_MODEL`; body includes a string `milestone_id`, `evidence_revision`, `criteria` (`id` and `text`), and `evidence_text` (up to 20,000 characters), with optional `evidence_links`.
-- `GET /db/test`
-- `POST /db/setup-schema`
+## Vercel services deployment
 
-Both assessment endpoints return per-criterion verdicts, quoted evidence, blockers, and a run trace. `/agent/assess` additionally applies output guards and process-local idempotency. Neither route approves milestones or triggers payments; the current PayPal capture route remains a separate flow.
+The root `vercel.json` defines a FastAPI backend service and a Vite frontend service. In Vercel, set the project framework to **Services** and configure the backend environment variables in Project Settings. At minimum, set `DATABASE_URL`, `TRUSTFLOW_ENV=production`, and a unique `SESSION_HASH_SALT`; add Gemini, PayPal, SMTP, and Zapier values as needed. Set `PAYPAL_RETURN_URL`, `PAYPAL_CANCEL_URL`, and optionally `TRUSTFLOW_FRONTEND_URL` to the Vercel production domain. Vercel deployment hostnames are included in backend origin checks automatically.
 
-## Optional integrations
+Apply the database schema and migrations to the Vercel database before using the app. The backend currently stores evidence files on the local filesystem; Vercel Functions only provide read-only application files and temporary `/tmp` storage. Persistent evidence upload/download needs an external object store before relying on attachments in a Vercel deployment.
 
-- **Elastic APM:** Set `ELASTIC_APM_SERVER_URL` and, when required by the APM Server, `ELASTIC_APM_SECRET_TOKEN`. The backend reports request performance and captured errors. Request bodies are not captured. Existing structured logs continue to go to standard output.
-- **Zapier:** Set `ZAPIER_WEBHOOK_URL` to a Zapier Catch Hook URL to receive `assessment.completed`, `payment.order_created`, `payment.authorized`, and `payment.captured` events. Delivery is best-effort and happens after the API response. Event payloads omit submitted evidence and credentials.
+The app prefers Argon2id through `argon2-cffi`. The existing offline development environment can fall back to Python’s scrypt implementation if that package cannot be installed. Deployed installs should install `backend/requirements.txt` so account passwords use Argon2id.
 
-Leave these settings empty to disable the corresponding integration. Zapier events are not yet persisted for retry after a process restart.
+## API overview
 
-The PayPal flow creates an AUTHORIZE order, then the caller submits the order ID for authorization after buyer approval, and later captures the authorization. The capture route currently trusts the caller-provided `milestoneApproved: true` flag. These endpoints do not authenticate application users or persist the PayPal order, authorization, or capture to the database. No PayPal webhook receiver, webhook signature verification, or separate payment verification endpoint exists in the imported implementation.
+- `POST /auth/signup`, `POST /auth/login`, `GET /auth/me`, `PATCH /auth/me`, `POST /auth/logout`
+- `GET /projects`, `POST /projects`, `GET /projects/{id}`, `POST /projects/{id}/accept`, `GET /projects/{id}/audit`
+- `POST /projects/{id}/milestones`, `PUT /projects/{id}/milestones/{milestone_id}`
+- `GET /milestones/{id}`, `POST /milestones/{id}/evidence`, `GET /milestones/{id}/evidence/{evidence_id}/file`
+- `POST /milestones/{id}/assessments`, `POST /milestones/{id}/decision`
+- `POST /milestones/{id}/payment/order`, `POST /milestones/{id}/payment/authorize`, `POST /milestones/{id}/payment/capture`, `POST /milestones/{id}/payment/reconcile`
+- `POST /webhooks/paypal`
+- `GET /health`, `GET /agent/health`, authenticated `GET /ready`
 
-See [the architecture notes](docs/ARCHITECTURE.md) for endpoint behavior, configuration, schema contents, and known integration boundaries.
+The same backend routes are also mounted under `/api` for the Vercel public API rewrite. Unprefixed paths remain available for local development and the existing Render deployment.
 
-## Project goals
+Cookie-authenticated mutations require the `X-CSRF-Token` returned by login or `/auth/me`. The browser stores the session in an HttpOnly cookie. A client can request approval only with a current successful assessment where every criterion is met. Capture verifies the persisted client decision, evidence revision, assessment report, payment state, and PayPal authorization. A caller-supplied approval flag is not used.
 
-Use Python 3.10 or newer.
+The old unscoped `/assessments`, `/agent/assess`, and `/paypal/*` payment routes are not registered by the application. Use the milestone-scoped authenticated endpoints above.
+
+## Tests and checks
+
+Run backend tests from `backend/`:
 
 ```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-# Add sandbox credentials and a PostgreSQL URL to backend/.env.
-python -m app.main
+../venv/bin/python -m unittest discover -s tests -v
 ```
 
-The API listens on port 3000 by default, or the value of `PORT` in `.env`. `PAYPAL_BASE_URL` defaults to PayPal sandbox; the checked-in example also sets the sandbox URL explicitly. Use live credentials and PayPal's live API URL only when deliberately configuring a production deployment.
+Run frontend checks from `frontend/`:
 
-Run the backend tests from `backend/` with `python -m unittest discover -s tests -v`. Route tests use a stub PayPal client and do not contact PayPal.
+```bash
+npm run lint
+npm run build
+```
 
-The database schema is in `backend/app/db/schema.sql`. After reviewing the target database and setting `DATABASE_URL`, the compatibility endpoint `POST /db/setup-schema` applies its idempotent `CREATE TABLE/INDEX IF NOT EXISTS` statements. This integration does not run it automatically. `GET /db/test` checks connectivity.
+Tests mock Gemini and PayPal calls. They do not apply database migrations or contact PostgreSQL, Gemini, PayPal, or Zapier. The frontend does not yet have a browser automation suite.
 
-## Current API
+## Known MVP limits
 
-- `GET /health`
-- `GET /paypal/test-auth`
-- `POST /paypal/create-order` — body: `{"amount": 10, "currency": "USD"}`; both fields are optional and default to 10 USD.
-- `POST /paypal/authorize-order` — body: `{"orderId": "..."}`.
-- `POST /paypal/capture-authorization` — body: `{"authorizationId": "...", "milestoneApproved": true}`. `amount` and `currency` may also be supplied for a final capture amount.
-- `GET /db/test`
-- `POST /db/setup-schema`
+- Password recovery is not implemented. Email verification and project invitation email delivery work when SMTP is configured. Without SMTP, local development signup remains immediate; production signup is disabled until SMTP is configured. The invitation still appears in the freelancer’s account when email is unavailable.
+- Rows already present in the legacy `users` table have no password hashes. They cannot sign in through the new auth flow until a secure account-claim process is added.
+- Uploaded files are stored privately and downloadable by project members, but are not extracted, scanned for malware, OCRed, or included in the Gemini prompt. Do not treat file-only evidence as verified.
+- Evidence links are recorded and checked for valid HTTP(S) shape, but never fetched.
+- An uncertain capture remains `capture_pending`; the backend will not issue another capture. Reconcile through the verified webhook or the authenticated PayPal order check. A mismatch requires operator review.
+- An expired PayPal authorization is blocked from capture. Replacing an expired authorization currently requires operator intervention.
+- Webhook verification needs a registered PayPal webhook and `PAYPAL_WEBHOOK_ID`. No live PayPal request has been made by the automated suite.
+- The Render blueprint uses a persistent disk for evidence and describes Sandbox settings. Configure environment secrets, run the schema script, and review costs before creating services. No deployment is performed automatically.
+- User and payment operations require a reachable PostgreSQL database. This workspace’s configured Neon host could not be resolved during the earlier migration audit, so live database behavior remains unverified.
 
-The PayPal flow creates an AUTHORIZE order, then the caller submits the order ID for authorization after buyer approval, and later captures the authorization. The capture route currently trusts the caller-provided `milestoneApproved: true` flag. These endpoints do not authenticate application users or persist the PayPal order, authorization, or capture to the database. No PayPal webhook receiver, webhook signature verification, or separate payment verification endpoint exists in the imported implementation.
-
-See [the architecture notes](docs/ARCHITECTURE.md) for endpoint behavior, configuration, schema contents, and known integration boundaries.
-
-## Project goals
-
-- Explore practical uses of agents in milestone workflows.
-- Improve visibility into milestone progress and payment status.
-- Build a focused prototype for coordinating approvals and PayPal payments.
-
-## Contributing
-
-The project is an early prototype. Contributions should preserve the existing Python backend and React frontend structure.
-
-## License
-
-To be decided.
+See [the current architecture](docs/ARCHITECTURE.md), [the safety model](docs/AGENT_SAFETY.md), [the demo script](docs/DEMO_SCRIPT.md), and [the Postman collection](postman/TrustFlow.postman_collection.json).

@@ -1,5 +1,7 @@
 # TrustFlow Node.js to Python Migration Audit
 
+> Historical snapshot dated 2026-10-20, written before the MVP work documented in the current README and architecture. Its endpoint, frontend, auth, and payment-gap findings describe the repository at that audit date and are not the current API contract. The live PostgreSQL connection limitation recorded below remains relevant until verified in a network-enabled environment.
+
 **Audit date:** 2026-10-20
 
 **Scope:** original `TrustFlow/` Express/TypeScript service and migrated `TrustFlow-team/` FastAPI backend and React/Vite frontend.

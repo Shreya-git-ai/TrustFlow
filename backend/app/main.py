@@ -14,7 +14,7 @@ from app.observability import log_event, parse_traceparent, request_trace
 from app.routers.auth import router as auth_router
 from app.routers.payments import router as payments_router
 from app.routers.workflow import router as workflow_router
-from app.security import get_current_user
+from app.security import allowed_origins, get_current_user
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
@@ -40,17 +40,9 @@ def _configure_elastic_apm(app: FastAPI) -> None:
 app = FastAPI(
     title="TrustFlow API", docs_url=None, redoc_url=None, openapi_url=None
 )
-cors_origins = [
-    origin.strip()
-    for origin in os.getenv(
-        "CORS_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173",
-    ).split(",")
-    if origin.strip()
-]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
+    allow_origins=sorted(allowed_origins()),
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "traceparent", "x-csrf-token"],
     allow_credentials=True,
@@ -59,6 +51,11 @@ _configure_elastic_apm(app)
 app.include_router(auth_router)
 app.include_router(workflow_router)
 app.include_router(payments_router)
+# Vercel's public API rewrite preserves /api in the incoming request path.
+# Keep the unprefixed routes too for Render and the local Vite proxy.
+app.include_router(auth_router, prefix="/api")
+app.include_router(workflow_router, prefix="/api")
+app.include_router(payments_router, prefix="/api")
 
 
 @app.middleware("http")
@@ -100,11 +97,13 @@ async def sanitized_unexpected_error(request: Request, error: Exception) -> JSON
 
 
 @app.get("/health")
+@app.get("/api/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "TrustFlow API"}
 
 
 @app.get("/agent/health")
+@app.get("/api/agent/health")
 async def agent_health() -> dict[str, str]:
     return {"status": "ok"}
 

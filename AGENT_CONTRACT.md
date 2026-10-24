@@ -1,38 +1,37 @@
-﻿# TrustFlow Agent <-> Backend Contract (v1)
+# TrustFlow assessment contract
 
-## Call
-POST /agent/assess
-Body:     AssessmentInput
-Response: AssessmentResult  (HTTP 200 whenever the agent ran; read `trace.outcome`)
+The assessor is an evidence reviewer. It returns a report to the authenticated workflow API; it has no authority to approve milestones or operate PayPal.
 
-Python equivalent: assess(AssessmentInput) -> AssessmentResult
-Models live in schemas/assessment.py (single source of truth).
+## Runtime path
 
-## Agent guarantees
-- Never moves money. It only returns verdicts.
-- all_supported and blockers are computed by code, never by the model.
-- Exactly one verdict per input criterion (no missing or duplicate criterion_id).
-- Every non-null quote is an exact substring of evidence_text; a "supported" verdict must carry a quote.
-- trace.outcome != "ok"  =>  assessment is null.
-- Same (milestone_id, evidence_revision) returns the cached result (idempotent).
+The application does not expose the old unscoped `POST /agent/assess` route. A project client requests an assessment through:
 
-## Backend responsibilities
-- Send evidence_revision with every call. Ignore a result whose revision is older than the latest submitted one.
-- assessment == null  =>  keep milestone in SUBMITTED, store trace, show "could not assess, retry".
-- all_supported == true  =>  only ENABLES the client's Approve button.
-- Payment happens only after the client approves; the backend then calls PayPal Sandbox.
-- Client timeout >= 70s (agent aborts its own call at 60s).
-- Store the full AssessmentResult JSON (assessment + trace) per call for demo/audit.
+```text
+POST /milestones/{milestone_id}/assessments
+```
 
-## Outcomes
-ok | empty_evidence | invalid_output | provider_error
-## What the backend should do with the result
+The route obtains milestone criteria and the latest evidence revision from PostgreSQL. It sends the persisted text and recorded links to `app.agent.orchestrator.run_assessment`, then stores the result in `assessment_reports` and `assessment_findings`. A report is stale when evidence changed while Gemini was running. Reports also record the report/prompt version, model, outcome, and limitations.
 
-- Call `POST /agent/assess` after saving the evidence. `milestone_id` is the UUID string; `evidence_revision` is the number of evidence rows for that milestone.
-- Store the response in `evidence.assessment` (JSONB) on the matching evidence row.
-- Write an `audit_events` row: `event_type` = `assessment_completed` or `assessment_failed`, `actor_type` = `ai`, `details` = model, prompt_version, duration_ms, outcome.
-- If `assessment` is null (failed run), keep the milestone as `submitted` and show a retry.
-- If `all_supported` is true, the client's Approve button can be enabled. The agent never approves or pays.
-- Evidence text over 20,000 characters is rejected with 422; show a limit message in the form.
-- Decision: add `assessed` to `milestones.status` (agreed with the backend owner). Transitions: `submitted` -> `assessed` only when `all_supported` is true; failed or unsupported runs stay `submitted`; approve is allowed only from `assessed`; new evidence after `assessed` returns the milestone to `submitted`. The existing database needs an ALTER on the status CHECK constraint, not just a schema.sql edit.
+## Model input and output
 
+The model receives the milestone criteria, evidence text, and reference URLs explicitly labeled as unverified. File content is not supplied. The model returns exactly one finding for each criterion, with one of:
+
+- `met`
+- `partially_met`
+- `not_met`
+- `unable_to_verify`
+
+Each finding can include an exact evidence quote, explanation, missing or contradictory proof, recommended next action, observed facts, and model inferences. The code verifies criterion coverage and requires exact quote matches for `met`. The code computes the overall summary, blockers, and `all_supported` value; the model cannot set those fields.
+
+Legacy verdict values remain parseable for the old unit fixtures, but new prompt responses use the four statuses above.
+
+## Trust boundaries
+
+- Treat evidence, criteria, URLs, and model output as untrusted.
+- Do not fetch links, inspect files, execute tools, or claim checks that were not performed.
+- Assessment does not modify milestone approval or payment state.
+- A current successful assessment with all criteria marked `met` is only a prerequisite. The client must still submit an explicit authenticated approval decision.
+- Capture separately verifies the persisted client decision, assessment and evidence revision, and PayPal authorization.
+- Provider failure, empty text, invalid output, or stale evidence must not approve a milestone.
+
+The model provider is configured with `GEMINI_API_KEY` and `TRUSTFLOW_MODEL`; an optional `TRUSTFLOW_FALLBACK_MODEL` can be used for eligible transient failures. The usual test suite uses a fake provider and does not require credentials.

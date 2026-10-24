@@ -1,0 +1,108 @@
+{
+  "info": {
+    "name": "TrustFlow MVP",
+    "description": "Authenticated project, evidence, review, client decision, and PayPal Sandbox flow. Use separate Postman accounts for client and freelancer roles. The webhook endpoint requires a real PayPal signature.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "clientEmail", "value": "client@example.test" },
+    { "key": "freelancerEmail", "value": "freelancer@example.test" },
+    { "key": "name", "value": "Demo Client" },
+    { "key": "password", "value": "replace-with-a-long-password" },
+    { "key": "csrf", "value": "" },
+    { "key": "projectId", "value": "" },
+    { "key": "milestoneId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "1 · Accounts",
+      "item": [
+        {
+          "name": "Sign up (run once per role/email)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"{{name}}\",\n  \"email\": \"{{clientEmail}}\",\n  \"password\": \"{{password}}\",\n  \"role\": \"client\"\n}" },
+            "url": "{{baseUrl}}/auth/signup"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Account created', () => pm.response.to.have.status(201));", "if (pm.response.code === 201) pm.collectionVariables.set('csrf', pm.response.json().csrf_token);"] } }]
+        },
+        {
+          "name": "Log in",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{clientEmail}}\",\n  \"password\": \"{{password}}\"\n}" },
+            "url": "{{baseUrl}}/auth/login"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Login succeeded', () => pm.response.to.have.status(200));", "if (pm.response.code === 200) pm.collectionVariables.set('csrf', pm.response.json().csrf_token);"] } }]
+        },
+        {
+          "name": "Current user",
+          "request": { "method": "GET", "url": "{{baseUrl}}/auth/me" },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Session is active', () => pm.response.to.have.status(200));"] } }]
+        },
+        {
+          "name": "Log out",
+          "request": { "method": "POST", "header": [{ "key": "X-CSRF-Token", "value": "{{csrf}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{}" }, "url": "{{baseUrl}}/auth/logout" }
+        }
+      ]
+    },
+    {
+      "name": "2 · Project and milestone (client session)",
+      "item": [
+        {
+          "name": "Create project",
+          "request": { "method": "POST", "header": [{ "key": "X-CSRF-Token", "value": "{{csrf}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"title\": \"Portfolio refresh\",\n  \"description\": \"A responsive portfolio site\",\n  \"currency\": \"USD\",\n  \"freelancer_email\": \"{{freelancerEmail}}\"\n}" }, "url": "{{baseUrl}}/projects" },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Project created', () => pm.response.to.have.status(201));", "if (pm.response.code === 201) pm.collectionVariables.set('projectId', pm.response.json().id);"] } }]
+        },
+        {
+          "name": "Create milestone",
+          "request": { "method": "POST", "header": [{ "key": "X-CSRF-Token", "value": "{{csrf}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"title\": \"Portfolio delivery\",\n  \"acceptance_criteria\": [\"Homepage is published\", \"Mobile layout is included\"],\n  \"amount\": \"250.00\",\n  \"currency\": \"USD\"\n}" }, "url": "{{baseUrl}}/projects/{{projectId}}/milestones" },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Milestone created', () => pm.response.to.have.status(201));", "if (pm.response.code === 201) pm.collectionVariables.set('milestoneId', pm.response.json().id);"] } }]
+        },
+        {
+          "name": "Project audit timeline",
+          "request": { "method": "GET", "url": "{{baseUrl}}/projects/{{projectId}}/audit" }
+        }
+      ]
+    },
+    {
+      "name": "3 · Freelancer evidence (freelancer session)",
+      "item": [
+        {
+          "name": "Accept invitation",
+          "request": { "method": "POST", "header": [{ "key": "X-CSRF-Token", "value": "{{csrf}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{}" }, "url": "{{baseUrl}}/projects/{{projectId}}/accept" }
+        },
+        {
+          "name": "Submit evidence text",
+          "request": { "method": "POST", "header": [{ "key": "X-CSRF-Token", "value": "{{csrf}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"description\": \"The homepage is published. Mobile layouts were checked at 390px and 768px widths.\",\n  \"links\": [\"https://example.com/portfolio\"]\n}" }, "url": "{{baseUrl}}/milestones/{{milestoneId}}/evidence" }
+        }
+      ]
+    },
+    {
+      "name": "4 · Review and decision (client session)",
+      "item": [
+        {
+          "name": "Assess latest evidence",
+          "request": { "method": "POST", "header": [{ "key": "X-CSRF-Token", "value": "{{csrf}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{}" }, "url": "{{baseUrl}}/milestones/{{milestoneId}}/assessments" },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Assessment persisted', () => pm.response.to.have.status(200));"] } }]
+        },
+        {
+          "name": "Approve milestone",
+          "request": { "method": "POST", "header": [{ "key": "X-CSRF-Token", "value": "{{csrf}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"decision\": \"approved\",\n  \"note\": \"Reviewed the current evidence revision.\"\n}" }, "url": "{{baseUrl}}/milestones/{{milestoneId}}/decision" }
+        }
+      ]
+    },
+    {
+      "name": "5 · PayPal Sandbox (client session)",
+      "item": [
+        { "name": "Create order", "request": { "method": "POST", "header": [{ "key": "X-CSRF-Token", "value": "{{csrf}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{}" }, "url": "{{baseUrl}}/milestones/{{milestoneId}}/payment/order" } },
+        { "name": "Authorize after buyer approval", "request": { "method": "POST", "header": [{ "key": "X-CSRF-Token", "value": "{{csrf}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{}" }, "url": "{{baseUrl}}/milestones/{{milestoneId}}/payment/authorize" } },
+        { "name": "Capture approved milestone", "request": { "method": "POST", "header": [{ "key": "X-CSRF-Token", "value": "{{csrf}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{}" }, "url": "{{baseUrl}}/milestones/{{milestoneId}}/payment/capture" } },
+        { "name": "Reconcile uncertain capture", "request": { "method": "POST", "header": [{ "key": "X-CSRF-Token", "value": "{{csrf}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{}" }, "url": "{{baseUrl}}/milestones/{{milestoneId}}/payment/reconcile" } }
+      ]
+    }
+  ]
+}
