@@ -13,15 +13,23 @@ from fastapi.responses import JSONResponse
 
 from app.db.connection import apply_schema, test_connection
 from app.observability import log_event, parse_traceparent, request_trace
+from app.routers.assessments import router as assessments_router
 from app.payments.paypal import PayPalClient
 from app.routers.payments import router as payments_router
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 app = FastAPI(
-    title="TrustFlow API", docs_url=None, redoc_url=None, openapi_url=None
+    title="TrustFlow API",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
+
+_configure_elastic_apm(app)
+
 app.include_router(payments_router)
+app.include_router(assessments_router)
 app.include_router(agent_router)
 
 
