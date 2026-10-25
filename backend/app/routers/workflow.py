@@ -7,11 +7,7 @@ from urllib.parse import urlsplit
 
 import base64
 import binascii
-import os
-from pathlib import Path
-
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
-from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.agent.orchestrator import run_assessment
@@ -160,14 +156,14 @@ def milestone(milestone_id: str, user: dict = Depends(get_current_user)):
 @router.get("/milestones/{milestone_id}/evidence/{evidence_id}/file")
 def evidence_file(milestone_id: str, evidence_id: str, user: dict = Depends(get_current_user)):
     metadata = _domain(workflow.get_evidence_file, user, milestone_id, evidence_id)
-    key = metadata["file_key"]
-    if not key or Path(key).name != key:
+    if not metadata["file_key"] or metadata["file_data"] is None:
         raise HTTPException(404, "Evidence file not found")
-    root = Path(os.getenv("TRUSTFLOW_UPLOAD_DIR", "data/private-uploads")).resolve()
-    path = root / key
-    if not path.is_file():
-        raise HTTPException(404, "Evidence file is no longer available")
-    response = FileResponse(path, media_type="application/octet-stream", filename=metadata["file_name"])
+    safe_name = storage.safe_filename(metadata["file_name"] or "evidence-file")
+    response = Response(
+        content=bytes(metadata["file_data"]),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Cache-Control"] = "private, no-store"
     return response
@@ -177,22 +173,15 @@ def evidence_file(milestone_id: str, evidence_id: str, user: dict = Depends(get_
 def submit_evidence(milestone_id: str, body: EvidenceBody, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
     checked_links = _safe_links(json.dumps(body.links))
     file_info = None
-    file_key = None
     if body.file_base64 is not None:
         try:
             content = base64.b64decode(body.file_base64, validate=True)
-            file_key, safe_name, safe_type = storage.store_upload(body.file_name or "evidence-file", body.file_content_type or "", content)
+            file_info = storage.store_upload(body.file_name or "evidence-file", body.file_content_type or "", content)
         except (storage.UnsafeUpload, binascii.Error, ValueError) as error:
             raise HTTPException(422, str(error)) from error
-        file_info = (file_key, safe_name, safe_type)
-    try:
-        result = _domain(workflow.add_evidence, user, milestone_id, body.description, checked_links, file_info)
-        background_tasks.add_task(deliver_pending)
-        return result
-    except Exception:
-        if file_key:
-            storage.remove_upload(file_key)
-        raise
+    result = _domain(workflow.add_evidence, user, milestone_id, body.description, checked_links, file_info)
+    background_tasks.add_task(deliver_pending)
+    return result
 
 
 @router.post("/milestones/{milestone_id}/assessments")

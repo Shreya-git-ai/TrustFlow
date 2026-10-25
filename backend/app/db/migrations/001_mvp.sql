@@ -48,6 +48,7 @@ ALTER TABLE evidence ADD COLUMN IF NOT EXISTS evidence_links JSONB NOT NULL DEFA
 ALTER TABLE evidence ADD COLUMN IF NOT EXISTS file_key TEXT;
 ALTER TABLE evidence ADD COLUMN IF NOT EXISTS file_name TEXT;
 ALTER TABLE evidence ADD COLUMN IF NOT EXISTS file_content_type TEXT;
+ALTER TABLE evidence ADD COLUMN IF NOT EXISTS file_data BYTEA;
 WITH duplicate_milestones AS (
     SELECT milestone_id FROM evidence
     GROUP BY milestone_id HAVING COUNT(*) > COUNT(DISTINCT evidence_revision)
