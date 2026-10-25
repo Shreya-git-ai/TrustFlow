@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
 import re
 import uuid
-from pathlib import Path
 
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+# Vercel limits function request bodies to roughly 4.5 MB. Leave room for JSON,
+# base64 expansion, cookies, and the other evidence fields in the same request.
+MAX_UPLOAD_BYTES = 3 * 1024 * 1024
 ALLOWED_TYPES = {
     "application/pdf": ".pdf",
     "image/png": ".png",
@@ -25,9 +25,9 @@ def safe_filename(name: str) -> str:
     return leaf or "evidence-file"
 
 
-def store_upload(name: str, claimed_type: str, content: bytes) -> tuple[str, str, str]:
+def store_upload(name: str, claimed_type: str, content: bytes) -> tuple[str, str, str, bytes]:
     if len(content) > MAX_UPLOAD_BYTES:
-        raise UnsafeUpload("File exceeds the 10 MB limit")
+        raise UnsafeUpload("File exceeds the 3 MB limit")
     extension = ALLOWED_TYPES.get(claimed_type.lower())
     if extension is None:
         raise UnsafeUpload("Allowed file types are PDF, PNG, JPEG, TXT, and CSV")
@@ -46,21 +46,5 @@ def store_upload(name: str, claimed_type: str, content: bytes) -> tuple[str, str
         except UnicodeDecodeError as error:
             raise UnsafeUpload("Text evidence must be UTF-8 encoded") from error
 
-    root = Path(os.getenv("TRUSTFLOW_UPLOAD_DIR", "data/private-uploads")).resolve()
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
     key = f"{uuid.uuid4().hex}{extension}"
-    target = root / key
-    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "wb") as output:
-        output.write(content)
-    return key, safe_filename(name), claimed_type.lower()
-
-
-def remove_upload(key: str | None) -> None:
-    if not key or not re.fullmatch(r"[a-f0-9]{32}\.(pdf|png|jpg|txt|csv)", key):
-        return
-    root = Path(os.getenv("TRUSTFLOW_UPLOAD_DIR", "data/private-uploads")).resolve()
-    try:
-        (root / key).unlink(missing_ok=True)
-    except OSError:
-        pass
+    return key, safe_filename(name), claimed_type.lower(), content

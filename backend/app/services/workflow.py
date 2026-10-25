@@ -183,7 +183,7 @@ def update_milestone(user: dict, project_id: str, milestone_id: str, title: str,
     return dict(row)
 
 
-def add_evidence(user: dict, milestone_id: str, description: str, links: list[str], file_info: tuple[str, str, str] | None) -> dict:
+def add_evidence(user: dict, milestone_id: str, description: str, links: list[str], file_info: tuple[str, str, str, bytes] | None) -> dict:
     if user["role"] != "freelancer":
         raise DomainError(403, "Only the assigned freelancer can submit evidence")
     if len(description) > 20_000 or not description.strip() and not links and file_info is None:
@@ -197,13 +197,13 @@ def add_evidence(user: dict, milestone_id: str, description: str, links: list[st
         if milestone["status"] in {"approved", "paid"}:
             raise DomainError(409, "This milestone is already approved and cannot accept a new revision")
         revision = milestone["evidence_revision"] + 1
-        file_key, file_name, file_type = file_info or (None, None, None)
+        file_key, file_name, file_type, file_data = file_info or (None, None, None, None)
         row = connection.execute(
             """INSERT INTO evidence(milestone_id, evidence_revision, description, evidence_text,
-                                   evidence_links, file_key, file_name, file_content_type)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, milestone_id, evidence_revision,
+                                   evidence_links, file_key, file_name, file_content_type, file_data)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, milestone_id, evidence_revision,
                              description, evidence_text, evidence_links, file_name, file_content_type, submitted_at""",
-            (milestone_id, revision, description.strip(), description.strip(), Jsonb(links), file_key, file_name, file_type),
+            (milestone_id, revision, description.strip(), description.strip(), Jsonb(links), file_key, file_name, file_type, file_data),
         ).fetchone()
         connection.execute(
             "UPDATE milestones SET evidence_revision = %s, status = 'submitted', approved_at = NULL, approved_evidence_revision = NULL, approved_assessment_id = NULL WHERE id = %s",
@@ -252,7 +252,7 @@ def get_evidence_file(user: dict, milestone_id: str, evidence_id: str) -> dict:
     with read_connection() as connection:
         _milestone_for(connection, milestone_id, user)
         row = connection.execute(
-            """SELECT file_key, file_name, file_content_type FROM evidence
+            """SELECT file_key, file_name, file_content_type, file_data FROM evidence
                WHERE id = %s AND milestone_id = %s""",
             (evidence_id, milestone_id),
         ).fetchone()
