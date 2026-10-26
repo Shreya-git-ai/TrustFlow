@@ -92,6 +92,7 @@ export async function getMilestone(id: string) { return request<Milestone>(`/mil
 export async function submitEvidence(id: string, description: string, links: string[], file?: File) {
   let fileBase64: string | undefined
   if (file) {
+    if (file.size > 3 * 1024 * 1024) throw new Error('Files must be 3 MB or smaller so they can be uploaded reliably.')
     const bytes = new Uint8Array(await file.arrayBuffer())
     let binary = ''
     for (let index = 0; index < bytes.length; index += 0x8000) {

@@ -6,18 +6,18 @@ TrustFlow helps clients and freelancers coordinate milestone terms, evidence, AI
 
 1. A client creates a project and invites a freelancer who already has a TrustFlow account.
 2. The freelancer accepts the invitation. The client defines milestone criteria, amount, currency, and deadline.
-3. The freelancer submits a revision with text, HTTP(S) reference links, and optionally a private file.
+3. The freelancer submits a revision with text, HTTP(S) reference links, and optionally a private file (up to 3 MB).
 4. The client asks Gemini to assess the current revision against the saved criteria. The report is stored with criterion-level findings and an audit record.
 5. The client requests changes or explicitly approves the current revision.
 6. PayPal Sandbox order, buyer approval, authorization, capture, and reconciliation are handled separately from the AI report.
 
-Assessment considers only the submitted text. Reference links are not opened. PDF, image, and text attachments can be uploaded and downloaded by project members, but file contents are not extracted or assessed. Reports disclose this limitation.
+Assessment considers only the submitted text. Reference links are not opened. PDF, image, and text attachments are stored as private PostgreSQL binary data and can be downloaded by project members, but file contents are not extracted or assessed. Reports disclose this limitation.
 
 ## Repository map
 
 - `backend/app/main.py` — FastAPI app, CORS, request tracing, health checks, and router registration.
 - `backend/app/routers/` — authenticated HTTP endpoints for accounts, projects, evidence, reviews, decisions, payments, and PayPal webhooks.
-- `backend/app/services/` — account, workflow, payment, private-file, and integration-outbox logic.
+- `backend/app/services/` — account, workflow, payment, evidence validation, and integration-outbox logic.
 - `backend/app/agent/` — Gemini prompt, provider, orchestration, output checks, and offline evaluation cases.
 - `backend/app/db/` — shared PostgreSQL connection boundary, base schema, and additive migrations.
 - `backend/app/payments/paypal.py` — PayPal Sandbox HTTP client.
@@ -78,7 +78,6 @@ Vite serves the app at `http://localhost:5173` and proxies `/api` to the local b
 - `CORS_ORIGINS` — exact frontend origins, comma separated.
 - `TRUSTFLOW_ENV` — set to `production` when deployed; this enables Secure session cookies.
 - `SESSION_HASH_SALT` — generate a unique random value for production.
-- `TRUSTFLOW_UPLOAD_DIR` — private file storage directory. Use persistent storage in deployments.
 - `TRUSTFLOW_FRONTEND_URL` — base URL used for verification and project invitation links.
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_USE_SSL`, `SMTP_USE_STARTTLS` — optional SMTP delivery. When configured, signup requires email confirmation and project invitations also send an email. Configure these on the backend only; never commit SMTP credentials.
 - `ZAPIER_WEBHOOK_URL` — optional Catch Hook; events are placed in a PostgreSQL outbox and retried.
@@ -88,7 +87,7 @@ Vite serves the app at `http://localhost:5173` and proxies `/api` to the local b
 
 The root `vercel.json` defines a FastAPI backend service and a Vite frontend service. In Vercel, set the project framework to **Services** and configure the backend environment variables in Project Settings. At minimum, set `DATABASE_URL`, `TRUSTFLOW_ENV=production`, and a unique `SESSION_HASH_SALT`; add Gemini, PayPal, SMTP, and Zapier values as needed. Set `PAYPAL_RETURN_URL`, `PAYPAL_CANCEL_URL`, and optionally `TRUSTFLOW_FRONTEND_URL` to the Vercel production domain. Vercel deployment hostnames are included in backend origin checks automatically.
 
-Apply the database schema and migrations to the Vercel database before using the app. The backend currently stores evidence files on the local filesystem; Vercel Functions only provide read-only application files and temporary `/tmp` storage. Persistent evidence upload/download needs an external object store before relying on attachments in a Vercel deployment.
+Apply the database schema and migrations to the Vercel database before using the app. Evidence files up to 3 MB are stored in PostgreSQL so they remain available across serverless function instances. This increases database storage use; larger files should use an external object store.
 
 The app prefers Argon2id through `argon2-cffi`. The existing offline development environment can fall back to Python’s scrypt implementation if that package cannot be installed. Deployed installs should install `backend/requirements.txt` so account passwords use Argon2id.
 
@@ -130,7 +129,7 @@ Tests mock Gemini and PayPal calls. They do not apply database migrations or con
 
 - Password recovery is not implemented. Email verification and project invitation email delivery work when SMTP is configured. Without SMTP, local development signup remains immediate; production signup is disabled until SMTP is configured. The invitation still appears in the freelancer’s account when email is unavailable.
 - Rows already present in the legacy `users` table have no password hashes. They cannot sign in through the new auth flow until a secure account-claim process is added.
-- Uploaded files are stored privately and downloadable by project members, but are not extracted, scanned for malware, OCRed, or included in the Gemini prompt. Do not treat file-only evidence as verified.
+- Uploaded files (up to 3 MB) are stored privately in PostgreSQL and downloadable by project members, but are not extracted, scanned for malware, OCRed, or included in the Gemini prompt. Do not treat file-only evidence as verified.
 - Evidence links are recorded and checked for valid HTTP(S) shape, but never fetched.
 - An uncertain capture remains `capture_pending`; the backend will not issue another capture. Reconcile through the verified webhook or the authenticated PayPal order check. A mismatch requires operator review.
 - An expired PayPal authorization is blocked from capture. Replacing an expired authorization currently requires operator intervention.
