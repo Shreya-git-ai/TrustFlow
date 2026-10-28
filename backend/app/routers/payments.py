@@ -34,6 +34,11 @@ def _approval_url(data: dict) -> str | None:
     return None
 
 
+@router.get("/payments")
+def payment_list(user: dict = Depends(get_current_user)):
+    return _domain(payments.list_for_user, user)
+
+
 @router.post("/milestones/{milestone_id}/payment/order", status_code=201)
 async def create_order(milestone_id: str, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
     payment = _domain(payments.prepare_order, user, milestone_id)

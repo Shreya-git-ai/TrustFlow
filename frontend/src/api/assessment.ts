@@ -28,6 +28,14 @@ export type Payment = {
   amount: string; currency: string; status: string; paypal_order_id?: string | null
   paypal_authorization_id?: string | null; paypal_capture_id?: string | null; paypal_approval_url?: string | null
 }
+export type WorkspaceActivity = {
+  event_type: string; actor_type: string; details: Record<string, unknown>; created_at: string
+  project_id: string; project_title: string; milestone_id: string | null; milestone_title: string | null
+}
+export type WorkspacePayment = {
+  id: string; milestone_id: string; project_id: string; project_title: string; milestone_title: string
+  amount: string; currency: string; status: string; updated_at: string
+}
 export type AssessmentResponse = {
   assessment: {
     milestone_id: string; evidence_revision: number; verdicts: CriterionVerdict[]; all_supported: boolean
@@ -56,10 +64,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T
 }
 
-export async function checkApi(signal?: AbortSignal): Promise<void> {
-  const response = await fetch(`${API_BASE}/health`, { signal })
-  if (!response.ok) throw new Error('Backend unavailable')
-}
 export async function currentUser() { return request<{ user: User; csrf_token: string }>('/auth/me') }
 export type SignupResult =
   | { verification_required: true; email: string; email_sent: boolean; message: string }
@@ -107,6 +111,8 @@ export async function decideMilestone(id: string, decision: string, note: string
   return request(`/milestones/${id}/decision`, { method: 'POST', body: JSON.stringify({ decision, note }) })
 }
 export async function getAudit(projectId: string) { return request<{ event_type: string; actor_type: string; details: Record<string, unknown>; created_at: string }[]>(`/projects/${projectId}/audit`) }
+export async function getWorkspaceActivity() { return request<WorkspaceActivity[]>('/activity') }
+export async function getPayments() { return request<WorkspacePayment[]>('/payments') }
 export async function createPaymentOrder(id: string) { return request<{ payment_id: string; order_id: string; approval_url: string; status: string }>(`/milestones/${id}/payment/order`, { method: 'POST', body: '{}' }) }
 export async function authorizePayment(id: string) { return request<{ status: string; authorization_id: string }>(`/milestones/${id}/payment/authorize`, { method: 'POST', body: '{}' }) }
 export async function capturePayment(id: string) { return request<{ status: string; capture_id?: string; message?: string }>(`/milestones/${id}/payment/capture`, { method: 'POST', body: '{}' }) }

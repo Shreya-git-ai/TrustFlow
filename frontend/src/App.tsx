@@ -1,14 +1,34 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   acceptProject, assessMilestone, authorizePayment, capturePayment, createMilestone, evidenceFileUrl,
-  createPaymentOrder, createProject, currentUser, decideMilestone, getAudit, getMilestone,
+  createPaymentOrder, createProject, currentUser, decideMilestone, getAudit, getMilestone, getPayments, getWorkspaceActivity,
   getProject, getProjects, login, logout, reconcilePayment, resendVerification, signup, submitEvidence,
   updateAccount, updateMilestone, verifyEmail,
-  type AssessmentResponse, type Milestone, type Project, type User,
+  type AssessmentResponse, type Milestone, type Project, type User, type WorkspaceActivity, type WorkspacePayment,
 } from './api/assessment'
+import NotificationCenter from './components/audit/NotificationCenter'
+import NotificationPreferencesCard from './components/audit/NotificationPreferences'
+import { buildNotifications, defaultNotificationPreferences, savedNotificationPreferences, type NotificationPreferences, type WorkspaceNotification } from './components/audit/notificationData'
+import RecentActivity from './components/audit/RecentActivity'
+import AccountSnapshot from './components/dashboard/AccountSnapshot'
+import WorkspacePulse from './components/dashboard/WorkspacePulse'
+import PaymentsPage from './components/payments/PaymentsPage'
+import InsightsPage from './pages/InsightsPage'
+import ResourcesPage from './pages/ResourcesPage'
 import './App.css'
 
 type AuthMode = 'login' | 'signup'
+type WorkspaceSection = 'overview' | 'payments' | 'insights' | 'resources'
+const ProjectsGrid = lazy(() => import('./components/dashboard/ProjectsGrid'))
+
+function savedNotificationIds(userId: string) {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(`trustflow.notifications.read.${userId}`) || '[]')
+    return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === 'string') : []
+  } catch {
+    return []
+  }
+}
 
 function App() {
   const [user, setUser] = useState<User | null>(null)
@@ -17,6 +37,12 @@ function App() {
   const [project, setProject] = useState<Project | null>(null)
   const [milestone, setMilestone] = useState<Milestone | null>(null)
   const [audit, setAudit] = useState<Awaited<ReturnType<typeof getAudit>>>([])
+  const [activity, setActivity] = useState<WorkspaceActivity[]>([])
+  const [activityLoading, setActivityLoading] = useState(false)
+  const [activityError, setActivityError] = useState('')
+  const [payments, setPayments] = useState<WorkspacePayment[]>([])
+  const [paymentsLoading, setPaymentsLoading] = useState(false)
+  const [paymentsError, setPaymentsError] = useState('')
   const [busy, setBusy] = useState(false)
   const operationCount = useRef(0)
   const [initializing, setInitializing] = useState(true)
@@ -27,9 +53,11 @@ function App() {
     return ''
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [activeSection, setActiveSection] = useState<WorkspaceSection>('overview')
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
-  const [notificationsRead, setNotificationsRead] = useState(false)
+  const [notificationsRead, setNotificationsRead] = useState<string[]>([])
+  const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(defaultNotificationPreferences)
   const [searchQuery, setSearchQuery] = useState('')
   const accountMenuRef = useRef<HTMLDivElement | null>(null)
   const notificationsRef = useRef<HTMLDivElement | null>(null)
@@ -39,8 +67,29 @@ function App() {
     if (window.location.pathname !== '/verify-email') return null
     return window.location.hash.length > 1 ? 'checking' : 'error'
   })
-
   const loadProjects = useCallback(async () => setProjects(await getProjects()), [])
+  const loadActivity = useCallback(async () => {
+    setActivityLoading(true)
+    setActivityError('')
+    try {
+      setActivity(await getWorkspaceActivity())
+    } catch (e) {
+      setActivityError(e instanceof Error ? e.message : 'Could not load workspace activity.')
+    } finally {
+      setActivityLoading(false)
+    }
+  }, [])
+  const loadPayments = useCallback(async () => {
+    setPaymentsLoading(true)
+    setPaymentsError('')
+    try {
+      setPayments(await getPayments())
+    } catch (e) {
+      setPaymentsError(e instanceof Error ? e.message : 'Could not load payment records.')
+    } finally {
+      setPaymentsLoading(false)
+    }
+  }, [])
   useEffect(() => {
     function closeFloatingMenus(event: MouseEvent) {
       if (accountMenuRef.current && !accountMenuRef.current.contains(event.target as Node)) setAccountMenuOpen(false)
@@ -64,6 +113,8 @@ function App() {
         const response = await currentUser()
         if (!active) return
         setUser(response.user)
+        setNotificationsRead(savedNotificationIds(response.user.id))
+        setNotificationPreferences(savedNotificationPreferences(response.user.id))
 
         // Project loading is independent from authentication. A project API
         // failure should not incorrectly sign out an otherwise valid session.
@@ -73,6 +124,7 @@ function App() {
         } catch (e) {
           if (active) setError(e instanceof Error ? e.message : 'Could not load projects.')
         }
+        if (active) void loadActivity()
       } catch (e) {
         if (!active) return
         setUser(null)
@@ -84,7 +136,7 @@ function App() {
 
     void initialize()
     return () => { active = false }
-  }, [])
+  }, [loadActivity])
 
   useEffect(() => {
     if (window.location.pathname !== '/verify-email') return
@@ -130,8 +182,58 @@ function App() {
     await run(async () => {
       const selected = await getProject(id)
       setSettingsOpen(false)
+      setActiveSection('overview')
       setProject(selected); setMilestone(null); setAudit(await getAudit(id))
     })
+  }
+
+  async function openWorkspaceActivity(item: WorkspaceActivity) {
+    await run(async () => {
+      const selected = await getProject(item.project_id)
+      const selectedMilestone = item.milestone_id ? await getMilestone(item.milestone_id) : null
+      setSettingsOpen(false); setActiveSection('overview')
+      setProject(selected); setMilestone(selectedMilestone); setAudit(await getAudit(item.project_id))
+    })
+  }
+
+  function openSettings() {
+    setProject(null); setMilestone(null); setSettingsOpen(true); setActiveSection('overview')
+    setAccountMenuOpen(false); setNotificationsOpen(false)
+  }
+
+  async function openPaymentMilestone(payment: WorkspacePayment) {
+    await run(async () => {
+      const selected = await getProject(payment.project_id)
+      const selectedMilestone = await getMilestone(payment.milestone_id)
+      setSettingsOpen(false); setActiveSection('overview')
+      setProject(selected); setMilestone(selectedMilestone); setAudit(await getAudit(payment.project_id))
+    })
+  }
+
+  function navigateSection(section: WorkspaceSection) {
+    setProject(null); setMilestone(null); setSettingsOpen(false); setActiveSection(section)
+    setAccountMenuOpen(false); setNotificationsOpen(false)
+    if (section === 'payments') void loadPayments()
+  }
+
+  function markNotificationsRead(ids: string[]) {
+    if (!user) return
+    const next = [...new Set([...notificationsRead, ...ids])]
+    setNotificationsRead(next)
+    try { window.localStorage.setItem(`trustflow.notifications.read.${user.id}`, JSON.stringify(next)) } catch { /* read state remains available for this session */ }
+  }
+
+  function saveNotificationPreferences(preferences: NotificationPreferences) {
+    setNotificationPreferences(preferences)
+    if (!user) return
+    try { window.localStorage.setItem(`trustflow.notifications.preferences.${user.id}`, JSON.stringify(preferences)) } catch { /* preferences remain active for this session */ }
+  }
+
+  function openNotification(item: WorkspaceNotification) {
+    markNotificationsRead([item.id])
+    if (item.destination === 'payments') navigateSection('payments')
+    else if (item.projectId) void openProject(item.projectId)
+    setNotificationsOpen(false)
   }
 
   async function refreshSelected() {
@@ -141,6 +243,7 @@ function App() {
     setProjects(await getProjects())
     if (milestone) setMilestone(await getMilestone(milestone.id))
     setAudit(await getAudit(project.id))
+    await loadActivity()
   }
 
   async function selectMilestone(id: string) {
@@ -159,12 +262,18 @@ function App() {
           return
         }
         setUser(response.user)
+        setNotificationsRead(savedNotificationIds(response.user.id))
+        setNotificationPreferences(savedNotificationPreferences(response.user.id))
         setProjects(await getProjects())
+        void loadActivity()
         setNotice('Email confirmation is off in local development. Configure SMTP to test the confirmation flow.')
       } else {
         const response = await login({ email: String(values.get('email')), password: String(values.get('password')) })
         setUser(response.user)
+        setNotificationsRead(savedNotificationIds(response.user.id))
+        setNotificationPreferences(savedNotificationPreferences(response.user.id))
         setProjects(await getProjects())
+        void loadActivity()
       }
     })
   }
@@ -186,7 +295,7 @@ function App() {
   }
 
   async function signOut() {
-    await run(async () => { await logout(); setUser(null); setProject(null); setMilestone(null); setProjects([]); setSettingsOpen(false) })
+    await run(async () => { await logout(); setUser(null); setNotificationsRead([]); setProject(null); setMilestone(null); setProjects([]); setActivity([]); setPayments([]); setSettingsOpen(false); setActiveSection('overview') })
   }
 
   if (window.location.pathname === '/verify-email') return <EmailVerificationPage status={verificationStatus || 'checking'} onResend={resendConfirmation} busy={busy} error={error} />
@@ -194,6 +303,10 @@ function App() {
   if (!['/', '/payment-return', '/payment-cancel'].includes(window.location.pathname)) return <main className="not-found-page"><section className="surface"><span className="eyebrow">404 · PAGE NOT FOUND</span><h1>We couldn’t find that page.</h1><p>Use your workspace navigation to return to a project.</p><a className="primary-button link-button" href="/">Go to TrustFlow</a></section></main>
   if (initializing) return <main className="app-loading" role="status" aria-live="polite"><span className="verification-spinner" aria-hidden="true"/><p>Loading TrustFlow…</p></main>
   if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onSubmit={handleAuth} busy={busy} error={error} />
+
+  const activePayments = projects.reduce((sum, item) => sum + (item.active_payment_count || 0), 0)
+  const notificationItems = buildNotifications(projects, user.role, notificationPreferences)
+  const sectionTitle = activeSection === 'payments' ? 'Payments' : activeSection === 'insights' ? 'Insights' : activeSection === 'resources' ? 'Resources' : 'Overview'
 
   return <div className="app-shell">
     <aside className="sidebar">
@@ -203,30 +316,27 @@ function App() {
       </div>
       <div className="workspace-chip"><span className="workspace-avatar">{user.name.trim().slice(0, 1).toUpperCase()}</span><span className="workspace-chip-copy"><small>YOUR WORKSPACE</small><strong>{user.role === 'client' ? 'Client studio' : 'Freelancer desk'}</strong><em><i /> Personal workspace</em></span><span className="workspace-chevron">⌄</span></div>
       <p className="nav-caption">WORKSPACE</p>
-      <button className={`nav-link ${!project && !settingsOpen ? 'selected' : ''}`} aria-label="Overview" title="Overview" onClick={() => { setProject(null); setMilestone(null); setSettingsOpen(false) }}><span aria-hidden="true">▦</span><span className="nav-label">Overview</span><kbd>01</kbd></button>
+      <button className={`nav-link ${!project && !settingsOpen && activeSection === 'overview' ? 'selected' : ''}`} aria-label="Overview" title="Overview" onClick={() => navigateSection('overview')}><span aria-hidden="true">▦</span><span className="nav-label">Overview</span><kbd>01</kbd></button>
       {project && <button className="nav-link selected" aria-label="Project details" title="Project details" onClick={() => { setMilestone(null); void openProject(project.id) }}><span aria-hidden="true">◇</span><span className="nav-label">Project details</span></button>}
-      <p className="nav-caption nav-caption-spaced">TOOLS <span>PREVIEW</span></p>
-      <button className="nav-link nav-link-preview" onClick={() => { setNotice('Payments overview is a UI preview. Live payment actions remain available within each milestone.'); setError('') }}><span aria-hidden="true">↗</span><span className="nav-label">Payments</span><span className="nav-soon">SOON</span></button>
-      <button className="nav-link nav-link-preview" onClick={() => { setNotice('Insights is a UI preview. Analytics will be connected after the event feed is implemented.'); setError('') }}><span aria-hidden="true">▥</span><span className="nav-label">Insights</span><span className="nav-soon">SOON</span></button>
-      <button className="nav-link nav-link-preview" onClick={() => { setNotice('The TrustFlow resource centre is a design preview and is not connected yet.'); setError('') }}><span aria-hidden="true">⌘</span><span className="nav-label">Resources</span><span className="nav-soon">SOON</span></button>
+      <p className="nav-caption nav-caption-spaced">WORKFLOW <span>LIVE</span></p>
+      <button className={`nav-link ${!project && !settingsOpen && activeSection === 'payments' ? 'selected' : ''}`} aria-label="Payments" title="Payments" aria-current={!project && activeSection === 'payments' ? 'page' : undefined} onClick={() => navigateSection('payments')}><span aria-hidden="true">↗</span><span className="nav-label">Payments</span>{activePayments > 0 && <span className="nav-live-count">{activePayments}</span>}</button>
+      <button className={`nav-link ${!project && !settingsOpen && activeSection === 'insights' ? 'selected' : ''}`} aria-label="Insights" title="Insights" aria-current={!project && activeSection === 'insights' ? 'page' : undefined} onClick={() => navigateSection('insights')}><span aria-hidden="true">▥</span><span className="nav-label">Insights</span></button>
+      <button className={`nav-link ${!project && !settingsOpen && activeSection === 'resources' ? 'selected' : ''}`} aria-label="Resources" title="Resources" aria-current={!project && activeSection === 'resources' ? 'page' : undefined} onClick={() => navigateSection('resources')}><span aria-hidden="true">⌘</span><span className="nav-label">Resources</span></button>
       <div className="sidebar-bottom">
         <div className="sidebar-payments-card"><div className="sidebar-payments-kicker"><span className="tiny-shield">✓</span> PAYMENT PARTNER</div><img src="/paypal-logo.svg" alt="PayPal"/><strong>Payments with a paper trail.</strong><p>Clear agreements. Visible evidence. Human approval.</p><span className="sidebar-preview-pill">TRUSTFLOW PRINCIPLE</span></div>
-        <div className="sidebar-account-mini"><span className="sidebar-account-avatar">{user.name.trim().slice(0, 1).toUpperCase()}</span><span className="sidebar-account-copy"><strong>{user.name}</strong><small>{user.role === 'client' ? 'Client account' : 'Freelancer account'}</small></span><button type="button" aria-label="Open account settings" title="Account settings" onClick={() => { setProject(null); setMilestone(null); setSettingsOpen(true) }}>⚙</button></div>
+        <div className="sidebar-account-mini"><span className="sidebar-account-avatar">{user.name.trim().slice(0, 1).toUpperCase()}</span><span className="sidebar-account-copy"><strong>{user.name}</strong><small>{user.role === 'client' ? 'Client account' : 'Freelancer account'}</small></span><button type="button" aria-label="Open account settings" title="Account settings" onClick={openSettings}>⚙</button></div>
       </div>
     </aside>
     <main className="main-area">
       <header className="topbar">
         <div className="topbar-context-area">
           <a className="brand topbar-mobile-brand" href="/" aria-label="TrustFlow home"><span className="brand-mark">T</span><span>trustflow<span className="brand-dot">.</span></span></a>
-          <div className="topbar-context"><span className="context-icon" aria-hidden="true">{settingsOpen ? '⚙' : milestone ? '◇' : project ? '↗' : '⌂'}</span><div><small>{settingsOpen ? 'ACCOUNT / PREFERENCES' : project ? 'WORKSPACE / PROJECTS' : 'YOUR WORKSPACE'}</small><strong>{settingsOpen ? 'Account settings' : milestone ? milestone.title : project ? project.title : 'Overview'}</strong></div></div>
-          {!settingsOpen && !project && <label className="topbar-search"><span aria-hidden="true">⌕</span><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} aria-label="Search projects" placeholder="Search projects…"/><kbd>⌘ K</kbd></label>}
+          <div className="topbar-context"><span className="context-icon" aria-hidden="true">{settingsOpen ? '⚙' : milestone ? '◇' : project ? '↗' : activeSection === 'payments' ? '$' : activeSection === 'insights' ? '▥' : activeSection === 'resources' ? '⌘' : '⌂'}</span><div><small>{settingsOpen ? 'ACCOUNT / PREFERENCES' : project ? 'WORKSPACE / PROJECTS' : activeSection === 'overview' ? 'YOUR WORKSPACE' : `WORKSPACE / ${sectionTitle.toUpperCase()}`}</small><strong>{settingsOpen ? 'Account settings' : milestone ? milestone.title : project ? project.title : sectionTitle}</strong></div></div>
+          {!settingsOpen && !project && activeSection === 'overview' && <label className="topbar-search"><span aria-hidden="true">⌕</span><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} aria-label="Search projects" placeholder="Search projects…"/><kbd>⌘ K</kbd></label>}
         </div>
         <div className="topbar-actions">
-          <div className="paypal-header-lockup topbar-paypal" aria-label="Powered by PayPal"><span className="powered-by">PAYMENTS BY</span><img className="paypal-logo" src="/paypal-logo.svg" alt="PayPal"/></div>
-          <div className="notification-wrap" ref={notificationsRef}>
-            <button type="button" className={`notification-trigger ${notificationsOpen ? 'is-open' : ''}`} aria-label="Open notification centre" aria-haspopup="dialog" aria-expanded={notificationsOpen} onClick={() => { setNotificationsOpen((open) => !open); setAccountMenuOpen(false) }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>{!notificationsRead && <i className="notification-count">3</i>}</button>
-            {notificationsOpen && <section className="notification-dropdown" role="dialog" aria-label="Notification centre"><div className="notification-head"><div><small>YOUR INBOX</small><strong>Notification centre</strong></div><button type="button" onClick={() => setNotificationsRead(true)}>{notificationsRead ? 'All read' : 'Mark all read'}</button></div><div className="notification-preview-note">DESIGN PREVIEW <span>Feed not connected yet</span></div><article className={`notification-item ${notificationsRead ? 'is-read' : ''}`}><span className="notification-icon purple">◇</span><div><strong>Milestone review</strong><p>Sample update · A milestone is ready for a client decision.</p><small>Example notification</small></div><i /></article><article className={`notification-item ${notificationsRead ? 'is-read' : ''}`}><span className="notification-icon green">✓</span><div><strong>Payment checkpoint</strong><p>Sample update · Payment state appears here when connected.</p><small>Example notification</small></div><i /></article><article className={`notification-item ${notificationsRead ? 'is-read' : ''}`}><span className="notification-icon amber">↗</span><div><strong>Workspace tip</strong><p>Keep acceptance criteria specific before work begins.</p><small>Example notification</small></div><i /></article></section>}
-          </div>
+          <div className="paypal-header-lockup topbar-paypal" aria-label="Powered by PayPal"><span className="powered-by">POWERED BY</span><img className="paypal-logo" src="/paypal-logo.svg" alt="PayPal"/></div>
+          <div ref={notificationsRef}><NotificationCenter projects={projects} role={user.role} preferences={notificationPreferences} open={notificationsOpen} readIds={notificationsRead} onToggle={() => { setNotificationsOpen((open) => !open); setAccountMenuOpen(false) }} onMarkAllRead={() => markNotificationsRead(notificationItems.map((item) => item.id))} onSelect={openNotification}/></div>
           <div className="account-menu-wrap" ref={accountMenuRef}>
             <button className={`account-trigger ${accountMenuOpen ? 'is-open' : ''}`} aria-label="Open account menu" aria-haspopup="menu" aria-expanded={accountMenuOpen} onClick={() => { setAccountMenuOpen((open) => !open); setNotificationsOpen(false) }}>
               <span className="account-trigger-avatar">{user.name.trim().slice(0, 1).toUpperCase()}</span><span className="account-trigger-copy"><strong>{user.name}</strong><small>{user.role === 'client' ? 'Client account' : 'Freelancer account'}</small></span><span className="account-chevron" aria-hidden="true">⌄</span>
@@ -237,7 +347,7 @@ function App() {
               {user.role === 'client' && ((user as User & { company_name?: string | null; company?: string | null; business_name?: string | null }).company_name || (user as User & { company_name?: string | null; company?: string | null; business_name?: string | null }).company || (user as User & { company_name?: string | null; company?: string | null; business_name?: string | null }).business_name) && <div className="account-company"><span>COMPANY / ORGANISATION</span><strong>{(user as User & { company_name?: string | null; company?: string | null; business_name?: string | null }).company_name || (user as User & { company_name?: string | null; company?: string | null; business_name?: string | null }).company || (user as User & { company_name?: string | null; company?: string | null; business_name?: string | null }).business_name}</strong></div>}
               <div className="account-security-summary"><span className="account-security-icon">♢</span><div><strong>Account security</strong><small>{user.email_verified ? 'Your email is confirmed.' : 'Confirm your email to finish account setup.'}</small></div><span className={`security-state ${user.email_verified ? 'good' : 'attention'}`}>{user.email_verified ? 'GOOD' : 'ACTION'}</span></div>
               <div className="account-dropdown-divider" />
-              <button role="menuitem" className="account-dropdown-item" onClick={() => { setProject(null); setMilestone(null); setSettingsOpen(true); setAccountMenuOpen(false) }}><span aria-hidden="true">⚙</span>Account settings <i>Manage profile & security</i></button>
+              <button role="menuitem" className="account-dropdown-item" onClick={openSettings}><span aria-hidden="true">⚙</span>Account settings <i>Manage profile & security</i></button>
               <button role="menuitem" className="account-dropdown-item danger" disabled={busy} onClick={() => { setAccountMenuOpen(false); void signOut() }}><span aria-hidden="true">↗</span>Log out <i>End this session</i></button>
             </div>}
           </div>
@@ -246,7 +356,19 @@ function App() {
       <div className="content">
         {error && <div role="alert" className="alert error-alert"><strong>Could not complete that action.</strong> {error}<button onClick={() => setError('')} aria-label="Dismiss">×</button></div>}
         {notice && <div role="status" className="alert success-alert">{notice}<button onClick={() => setNotice('')} aria-label="Dismiss">×</button></div>}
-        {!project && settingsOpen ? <SettingsPage user={user} busy={busy} onSave={(data) => void run(async () => { const response = await updateAccount(data); setUser(response.user); setNotice('Account settings saved. Your session was rotated.') })} /> : !project ? <Dashboard user={user} projects={projects} busy={busy} searchQuery={searchQuery} onOpen={openProject} onOpenSettings={() => { setProject(null); setMilestone(null); setSettingsOpen(true) }} onAccept={(id) => void run(async () => { await acceptProject(id); await loadProjects(); setNotice('Project invitation accepted.') })} onCreate={(data) => run(async () => { await createProject(data); await loadProjects(); setNotice('Project created and invitation sent to the registered freelancer.') })} /> : milestone ? <MilestonePage
+        {!project && settingsOpen && <SettingsPage user={user} busy={busy} notificationPreferences={notificationPreferences} onPreferenceChange={saveNotificationPreferences} onSave={(data) => void run(async () => { const response = await updateAccount(data); setUser(response.user); setNotice('Account settings saved. Your session was rotated.') })} />}
+        {!project && !settingsOpen && activeSection === 'overview' && <Dashboard
+          user={user} projects={projects} busy={busy} searchQuery={searchQuery} activity={activity}
+          activityLoading={activityLoading} activityError={activityError} onOpen={openProject}
+          onOpenSettings={openSettings} onOpenInsights={() => navigateSection('insights')} onOpenActivity={openWorkspaceActivity}
+          onOpenPayments={() => navigateSection('payments')}
+          onAccept={(id) => void run(async () => { await acceptProject(id); await loadProjects(); await loadActivity(); setNotice('Project invitation accepted.') })}
+          onCreate={(data) => run(async () => { await createProject(data); await loadProjects(); await loadActivity(); setNotice('Project created and invitation sent to the registered freelancer.') })}
+        />}
+        {!project && !settingsOpen && activeSection === 'payments' && <PaymentsPage payments={payments} loading={paymentsLoading} error={paymentsError} onRefresh={() => void loadPayments()} onOpenMilestone={(payment) => void openPaymentMilestone(payment)} onOverview={() => navigateSection('overview')}/>}
+        {!project && !settingsOpen && activeSection === 'insights' && <InsightsPage projects={projects} role={user.role} activity={activity} loading={activityLoading} error={activityError} onRefresh={() => void loadActivity()} onOpenProject={(id) => void openProject(id)} onOpenActivity={(item) => void openWorkspaceActivity(item)}/>}
+        {!project && !settingsOpen && activeSection === 'resources' && <ResourcesPage role={user.role} projects={projects} onOverview={() => navigateSection('overview')} onPayments={() => navigateSection('payments')} onOpenProject={(id) => void openProject(id)}/>}
+        {project && milestone && <MilestonePage
           milestone={milestone} project={project} user={user} busy={busy} audit={audit}
           onBack={() => setMilestone(null)} onRefresh={() => void run(refreshSelected)}
           onUpdate={(data) => run(async () => { await updateMilestone(project.id, milestone.id, data); await refreshSelected(); setNotice('Milestone terms updated.') })}
@@ -257,7 +379,8 @@ function App() {
           onAuthorize={() => void run(async () => { await authorizePayment(milestone.id); await refreshSelected(); setNotice('PayPal authorization confirmed.') })}
           onCapture={() => void run(async () => { if (!window.confirm('Capture the authorized milestone amount from PayPal?')) return; const result = await capturePayment(milestone.id); await refreshSelected(); setNotice(result.status === 'captured' ? 'PayPal confirmed the capture.' : 'Capture is pending. TrustFlow will not submit another capture until PayPal is reconciled.') })}
           onReconcile={() => void run(async () => { const result = await reconcilePayment(milestone.id); await refreshSelected(); setNotice(result.status === 'captured' ? 'PayPal confirmed the capture.' : 'PayPal still has no completed capture to report.') })}
-        /> : <ProjectPage project={project} user={user} busy={busy} onBack={() => { setProject(null); setMilestone(null) }} onSelect={selectMilestone} onCreateMilestone={(data) => run(async () => { await createMilestone(project.id, data); await refreshSelected(); setNotice('Milestone added to the project.') })} />}
+        />}
+        {project && !milestone && <ProjectPage project={project} user={user} busy={busy} onBack={() => { setProject(null); setMilestone(null) }} onSelect={selectMilestone} onCreateMilestone={(data) => run(async () => { await createMilestone(project.id, data); await refreshSelected(); setNotice('Milestone added to the project.') })}/>}
       </div>
     </main>
   </div>
@@ -349,54 +472,60 @@ function ResendVerificationForm({ initialEmail = '', busy, error, onResend }: {
     {message && <p className="resend-message" role="status">{message}</p>}
   </form>
 }
-function Dashboard({ user, projects, busy, searchQuery, onOpen, onOpenSettings, onAccept, onCreate }: { user: User; projects: Project[]; busy: boolean; searchQuery: string; onOpen: (id: string) => void; onOpenSettings: () => void; onAccept: (id: string) => void; onCreate: (data: { title: string; description: string; currency: string; freelancer_email: string }) => Promise<boolean> }) {
+function Dashboard({ user, projects, busy, searchQuery, activity, activityLoading, activityError, onOpen, onOpenSettings, onOpenInsights, onOpenActivity, onOpenPayments, onAccept, onCreate }: {
+  user: User; projects: Project[]; busy: boolean; searchQuery: string; activity: WorkspaceActivity[]
+  activityLoading: boolean; activityError: string; onOpen: (id: string) => void; onOpenSettings: () => void
+  onOpenInsights: () => void; onOpenActivity: (item: WorkspaceActivity) => void
+  onOpenPayments: () => void; onAccept: (id: string) => void
+  onCreate: (data: { title: string; description: string; currency: string; freelancer_email: string }) => Promise<boolean>
+}) {
   const [projectFilter, setProjectFilter] = useState<'all' | 'active' | 'invited'>('all')
   const query = searchQuery.trim().toLowerCase()
   const filteredProjects = projects.filter((item) => {
     const matchesQuery = !query || `${item.title} ${item.description || ''} ${item.client_name || ''} ${item.freelancer_name || ''}`.toLowerCase().includes(query)
-    const matchesFilter = projectFilter === 'all' || (projectFilter === 'invited' ? item.membership_status === 'invited' : item.membership_status !== 'invited')
+    const matchesFilter = projectFilter === 'all' || (projectFilter === 'invited' ? item.membership_status === 'invited' : item.membership_status === 'accepted')
     return matchesQuery && matchesFilter
   })
-  const activeCount = projects.filter((item) => item.membership_status !== 'invited').length
+  const activeCount = projects.filter((item) => item.membership_status === 'accepted').length
   const invitationCount = projects.filter((item) => item.membership_status === 'invited').length
   const milestoneCount = projects.reduce((sum, item) => sum + (item.milestone_count || 0), 0)
   const submittedCount = projects.reduce((sum, item) => sum + (user.role === 'client' ? item.submitted_count || 0 : item.revision_count || 0), 0)
   const dueCount = projects.reduce((sum, item) => sum + (item.decision_due_count || 0), 0)
   const paymentCount = projects.reduce((sum, item) => sum + (item.active_payment_count || 0), 0)
-  const today = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'short', day: 'numeric' }).format(new Date())
+  const [today] = useState(() => new Intl.DateTimeFormat('en', { weekday: 'long', month: 'short', day: 'numeric' }).format(new Date()))
   return <>
     <section className="dashboard-welcome-band">
-      <div className="welcome-copy"><span className="eyebrow">{user.role === 'client' ? 'CLIENT WORKSPACE' : 'FREELANCER WORKSPACE'} <i className="live-status-dot"/> LIVE OVERVIEW</span><h1>{user.role === 'client' ? <>Good work starts with <em>clarity.</em></> : <>Keep your next milestone <em>moving.</em></>}</h1><p>{user.role === 'client' ? 'One place to align on deliverables, review proof, and keep payment decisions transparent.' : 'Your projects, evidence requests, and payment checkpoints — all in one place.'}</p><div className="welcome-meta"><span className="welcome-date">◷ {today}</span><span className={`welcome-email-status ${user.email_verified ? 'verified' : 'pending'}`}><i/>{user.email_verified ? 'Email confirmed' : 'Email not verified'}</span><span className="welcome-role">{user.role === 'client' ? 'Client account' : 'Freelancer account'}</span></div></div>
-      <div className="welcome-art" aria-hidden="true"><div className="art-orbit orbit-one"/><div className="art-orbit orbit-two"/><div className="art-core"><span>TF</span><i>✓</i></div><span className="art-float art-float-one">↗ <b>Clear terms</b></span><span className="art-float art-float-two">✓ <b>Human approval</b></span><span className="art-float art-float-three">◈ <b>Traceable work</b></span></div>
-      {user.role === 'client' && <button type="button" className="welcome-cta" onClick={() => document.getElementById('create-project-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>＋ New project <span>→</span></button>}
+      <div className="welcome-copy"><span className="eyebrow">{user.role === 'client' ? 'CLIENT WORKSPACE' : 'FREELANCER WORKSPACE'}</span><h1>{user.role === 'client' ? <>Good work starts with <em>clarity.</em></> : <>Keep your next milestone <em>moving.</em></>}</h1><p>{user.role === 'client' ? 'Manage projects, review evidence, and keep payment decisions transparent.' : 'Track your projects, submit evidence, and stay on top of payment milestones.'}</p><div className="welcome-meta"><span className="welcome-date">◷ {today}</span><span className={`welcome-email-status ${user.email_verified ? 'verified' : 'pending'}`}><i/>{user.email_verified ? 'Email confirmed' : 'Email not verified'}</span></div></div>
+      {user.role === 'client' && <button type="button" className="welcome-cta" onClick={() => document.getElementById('create-project-form')?.scrollIntoView({ behavior: 'auto', block: 'center' })}>＋ New project <span>→</span></button>}
     </section>
     <div className="stat-row"><Stat label="TOTAL PROJECTS" value={projects.length} icon="▦"/><Stat label="MILESTONES" value={milestoneCount} icon="◇"/><Stat label={user.role === 'client' ? 'SUBMISSIONS TO REVIEW' : 'REVISION REQUESTS'} value={submittedCount} icon="◎"/><Stat label="DECISIONS DUE" value={dueCount} icon="✓"/><Stat label="ACTIVE PAYMENTS" value={paymentCount} icon="$"/></div>
     <div className="dashboard-grid dashboard-grid-new">
       <section className="surface project-section projects-panel">
         <div className="section-head project-section-heading"><div><span className="eyebrow">YOUR COLLABORATIONS</span><h2>Projects <span className="title-count">{projects.length}</span></h2><p>Keep agreements, revisions, and decisions together.</p></div><span className="project-panel-mark" aria-hidden="true">⌘</span></div>
         <div className="project-filter-row"><div className="project-filter-tabs" role="tablist" aria-label="Filter projects"><button type="button" role="tab" aria-selected={projectFilter === 'all'} className={projectFilter === 'all' ? 'active' : ''} onClick={() => setProjectFilter('all')}>All projects <span>{projects.length}</span></button><button type="button" role="tab" aria-selected={projectFilter === 'active'} className={projectFilter === 'active' ? 'active' : ''} onClick={() => setProjectFilter('active')}>Active <span>{activeCount}</span></button><button type="button" role="tab" aria-selected={projectFilter === 'invited'} className={projectFilter === 'invited' ? 'active' : ''} onClick={() => setProjectFilter('invited')}>Invitations <span>{invitationCount}</span></button></div><span className="subtle-count">{filteredProjects.length} shown</span></div>
-        {projects.length === 0 ? <div className="projects-empty-new"><span className="empty-illustration"><i>◇</i><b>＋</b></span><h3>Your next collaboration starts here.</h3><p>{user.role === 'client' ? 'Create a project, set expectations, and invite a freelancer using their registered email.' : 'When a client invites you to a project, it will appear here with the agreed scope and next steps.'}</p>{user.role === 'client' && <button type="button" className="secondary-button" onClick={() => document.getElementById('create-project-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>Create your first project <span>→</span></button>}</div> : filteredProjects.length === 0 ? <div className="projects-empty-new compact"><span className="empty-illustration"><i>⌕</i></span><h3>No matches found</h3><p>Try another project name or choose a different filter.</p><button type="button" className="text-button" onClick={() => setProjectFilter('all')}>Clear project filter</button></div> : <div className="project-list project-list-new">{filteredProjects.map((item, index) => <article className="project-row project-row-new" key={item.id}><div className={`project-symbol project-symbol-${index % 4}`}>{item.title.slice(0, 1).toUpperCase()}</div><div className="project-row-main"><strong>{item.title}</strong><span>{user.role === 'client' ? `Freelancer · ${item.freelancer_name || 'Not assigned'}` : `Client · ${item.client_name || 'Not listed'}`}</span><small className="project-row-submeta">{item.milestone_count || 0} milestones <i/> {item.membership_status === 'invited' ? 'Awaiting acceptance' : 'Workspace active'}</small></div><div className="project-row-meta"><span className={`status-chip ${item.membership_status}`}>{item.membership_status === 'invited' ? 'Invitation pending' : 'Active'}</span><small>{item.milestone_count || 0} milestones</small></div>{item.membership_status === 'invited' && user.role === 'freelancer' ? <button className="secondary-button project-row-action" disabled={busy} onClick={() => onAccept(item.id)}>Accept invite</button> : <button className="arrow-button project-open-button" aria-label={`Open ${item.title}`} onClick={() => onOpen(item.id)}>↗</button>}</article>)}</div>}
+        {projects.length === 0 ? <div className="projects-empty-new"><span className="empty-illustration"><i>◇</i><b>＋</b></span><h3>Your next collaboration starts here.</h3><p>{user.role === 'client' ? 'Create a project, set expectations, and invite a freelancer using their registered email.' : 'When a client invites you to a project, it will appear here with the agreed scope and next steps.'}</p>{user.role === 'client' && <button type="button" className="secondary-button" onClick={() => document.getElementById('create-project-form')?.scrollIntoView({ behavior: 'auto', block: 'center' })}>Create your first project <span>→</span></button>}</div> : filteredProjects.length === 0 ? <div className="projects-empty-new compact"><span className="empty-illustration"><i>⌕</i></span><h3>No matches found</h3><p>Try another project name or choose a different filter.</p><button type="button" className="text-button" onClick={() => setProjectFilter('all')}>Clear project filter</button></div> : <Suspense fallback={<div className="projects-grid-loading" role="status">Loading projects…</div>}><ProjectsGrid projects={filteredProjects} role={user.role} busy={busy} onOpen={onOpen} onAccept={onAccept} /></Suspense>}
         <div className="project-panel-footer"><span><i/> Your project records stay together in one place.</span><span className="footer-lock">⌑ Privacy-first workspace</span></div>
       </section>
       <div className="dashboard-side-stack">
         {user.role === 'client' && <CreateProjectForm busy={busy} onCreate={onCreate}/>}
-        <section className="surface workspace-pulse-card"><div className="section-head"><div><span className="eyebrow">AT A GLANCE</span><h2>Workspace pulse</h2></div><span className="pulse-icon">◌</span></div><div className="pulse-total"><strong>{projects.length}</strong><span>projects in your workspace</span></div><div className="pulse-bar"><span style={{ width: `${projects.length ? activeCount / projects.length * 100 : 0}%` }}/><span style={{ width: `${projects.length ? invitationCount / projects.length * 100 : 0}%` }}/></div><div className="pulse-legend"><span><i className="legend-active"/>Active <strong>{activeCount}</strong></span><span><i className="legend-invited"/>Invitations <strong>{invitationCount}</strong></span></div><div className="pulse-divider"/><div className="pulse-metric-row"><span>Milestones across projects</span><strong>{milestoneCount}</strong></div><div className="pulse-metric-row"><span>{user.role === 'client' ? 'Awaiting your decision' : 'Revision requests'}</span><strong>{user.role === 'client' ? dueCount : submittedCount}</strong></div><div className="pulse-metric-row"><span>Payments in progress</span><strong>{paymentCount}</strong></div><p className="pulse-footnote">Counts reflect the projects currently returned by TrustFlow.</p></section>
-        <section className="surface trustflow-flow-card"><div className="trustflow-flow-head"><span className="flow-shield">✓</span><div><span className="eyebrow">THE TRUSTFLOW METHOD</span><h3>Evidence informs. People decide.</h3></div></div><div className="flow-stepper"><span className="flow-step"><i>01</i><b>Agree</b></span><span className="flow-connector"/><span className="flow-step"><i>02</i><b>Show proof</b></span><span className="flow-connector"/><span className="flow-step"><i>03</i><b>Review</b></span><span className="flow-connector"/><span className="flow-step"><i>04</i><b>Pay</b></span></div><div className="flow-card-footer"><span className="flow-paypal-mark"><img src="/paypal-logo.svg" alt="PayPal"/></span><span>Payment actions stay tied to each milestone.</span><span className="flow-preview-badge">PROCESS</span></div></section>
+        <WorkspacePulse user={user} projects={projects} projectFilter={projectFilter} onFilter={setProjectFilter} onPayments={onOpenPayments}/>
       </div>
     </div>
     <div className="dashboard-lower-grid">
-      <section className="surface activity-preview-card"><div className="section-head"><div><span className="eyebrow">WORKSPACE UPDATES</span><h2>Recent activity</h2><p>A timeline for the things that move your projects forward.</p></div><span className="preview-badge">UI PREVIEW</span></div><div className="activity-preview-notice"><span>i</span><p>This feed is a design preview. These sample events are <strong>not live account activity</strong> yet.</p></div><div className="activity-preview-list"><article><span className="activity-preview-icon purple">◇</span><div><strong>Evidence submitted</strong><p>A freelancer shares files, links, and a description for review.</p><small>Example event <i>·</i> Evidence</small></div><span className="activity-sample-tag">SAMPLE</span></article><article><span className="activity-preview-icon amber">◎</span><div><strong>Decision requested</strong><p>The client checks the submission against the agreed criteria.</p><small>Example event <i>·</i> Review</small></div><span className="activity-sample-tag">SAMPLE</span></article><article><span className="activity-preview-icon green">✓</span><div><strong>Payment reconciled</strong><p>Payment status is confirmed after PayPal reports the result.</p><small>Example event <i>·</i> Payments</small></div><span className="activity-sample-tag">SAMPLE</span></article></div></section>
-      <section className="surface account-snapshot-card"><div className="section-head"><div><span className="eyebrow">ACCOUNT SNAPSHOT</span><h2>Your workspace details</h2><p>The essentials, at a glance.</p></div><button type="button" className="snapshot-edit" onClick={onOpenSettings} aria-label="Open account settings">↗</button></div><div className="snapshot-profile"><span className="snapshot-avatar">{user.name.trim().slice(0, 1).toUpperCase()}</span><div><strong>{user.name}</strong><span>{user.email}</span></div><span className={`snapshot-verification ${user.email_verified ? 'verified' : 'pending'}`}><i/>{user.email_verified ? 'Verified' : 'Pending'}</span></div><div className="snapshot-details"><div><span>ACCOUNT ROLE</span><strong>{user.role === 'client' ? 'Client' : 'Freelancer'}</strong></div><div><span>WORKSPACE</span><strong>{user.role === 'client' ? 'Client studio' : 'Freelancer desk'}</strong></div><div><span>PROJECTS</span><strong>{projects.length} total</strong></div><div><span>SECURITY</span><strong>{user.email_verified ? 'Email confirmed' : 'Verification needed'}</strong></div></div><button type="button" className="secondary-button snapshot-settings-button" onClick={onOpenSettings}>Manage account settings <span>→</span></button><p className="snapshot-footnote">Some profile fields may be added as the account system grows.</p></section>
+      <RecentActivity activity={activity} loading={activityLoading} error={activityError} onOpenActivity={onOpenActivity} onViewAll={onOpenInsights}/>
+      <AccountSnapshot user={user} projectCount={projects.length} onSettings={onOpenSettings}/>
     </div>
   </>
 }
 
 function Stat({ label, value, icon }: { label: string; value: string | number; icon: string }) { return <div className="stat-card"><span className="stat-icon">{icon}</span><div><small>{label}</small><strong>{value}</strong></div></div> }
 
-function SettingsPage({ user, busy, onSave }: { user: User; busy: boolean; onSave: (data: { name: string; current_password: string; new_password?: string }) => void }) {
+function SettingsPage({ user, busy, notificationPreferences, onPreferenceChange, onSave }: {
+  user: User; busy: boolean; notificationPreferences: NotificationPreferences
+  onPreferenceChange: (preferences: NotificationPreferences) => void
+  onSave: (data: { name: string; current_password: string; new_password?: string }) => void
+}) {
   const [passwordError, setPasswordError] = useState('')
-  const [emailUpdatesPreview, setEmailUpdatesPreview] = useState(true)
-  const [paymentAlertsPreview, setPaymentAlertsPreview] = useState(true)
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
@@ -415,7 +544,7 @@ function SettingsPage({ user, busy, onSave }: { user: User; busy: boolean; onSav
       <aside className="settings-side-stack">
         <section className="surface settings-identity-card"><div className="settings-cover-art"><span className="cover-orbit cover-orbit-a"/><span className="cover-orbit cover-orbit-b"/><span className="cover-monogram">{user.name.trim().slice(0, 1).toUpperCase()}</span><span className="cover-role-label">{user.role === 'client' ? 'CLIENT' : 'FREELANCER'}</span></div><div className="settings-identity-body"><span className="eyebrow">ACCOUNT IDENTITY</span><h2>{user.name}</h2><p>{user.email}</p><div className={`identity-verification ${user.email_verified ? 'verified' : 'pending'}`}><i/>{user.email_verified ? 'Email verified' : 'Email confirmation pending'}</div><div className="identity-facts"><div><span>ROLE</span><strong>{user.role === 'client' ? 'Client' : 'Freelancer'}</strong></div><div><span>WORKSPACE</span><strong>{user.role === 'client' ? 'Client studio' : 'Freelancer desk'}</strong></div></div></div></section>
         <section className="surface settings-security-card"><div className="settings-side-head"><span className="settings-side-icon green">✓</span><div><span className="eyebrow">SECURITY STATUS</span><h3>{user.email_verified ? 'Email confirmed' : 'One step left'}</h3></div></div><p>{user.email_verified ? 'Your account email is confirmed. Keep using a unique password and avoid sharing access.' : 'Confirm your email address to complete the account verification step.'}</p><div className="security-check-row"><span><i className={user.email_verified ? 'ok' : 'waiting'}/>Email confirmation</span><strong>{user.email_verified ? 'Complete' : 'Pending'}</strong></div><div className="security-check-row"><span><i className="ok"/>Authenticated session</span><strong>Active</strong></div><div className="security-check-row"><span><i className="waiting"/>Password recovery</span><strong>Not configured</strong></div></section>
-        <section className="surface settings-preferences-preview"><div className="settings-side-head"><span className="settings-side-icon purple">☷</span><div><span className="eyebrow">PREFERENCES</span><h3>Notification preferences</h3></div><span className="preview-badge">PREVIEW</span></div><p>Prototype controls only. These choices are temporary and are not saved to your account.</p><label className="preference-toggle-row"><span><strong>Project updates</strong><small>Invitations, evidence and decisions</small></span><input type="checkbox" checked={emailUpdatesPreview} onChange={(event) => setEmailUpdatesPreview(event.target.checked)}/><i/></label><label className="preference-toggle-row"><span><strong>Payment alerts</strong><small>Authorization and capture updates</small></span><input type="checkbox" checked={paymentAlertsPreview} onChange={(event) => setPaymentAlertsPreview(event.target.checked)}/><i/></label><div className="preference-preview-foot"><span className="local-state-dot"/>{emailUpdatesPreview || paymentAlertsPreview ? 'At least one preview alert is enabled' : 'All preview alerts are paused'}</div></section>
+        <NotificationPreferencesCard preferences={notificationPreferences} onChange={onPreferenceChange}/>
       </aside>
     </div>
   </>
