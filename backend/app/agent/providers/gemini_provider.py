@@ -56,6 +56,3 @@ class GeminiProvider:
                 self.name = f"gemini:{self.fallback_model}"
                 return self._call(self.fallback_model, system, user, timeout_s)
             raise
-
-    # keeps smoke_gemini.py working
-    complete = complete_json

@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 import base64
 import binascii
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from app.agent.orchestrator import run_assessment
@@ -118,6 +118,11 @@ def accept_invitation(project_id: str, user: dict = Depends(require_csrf)):
 @router.get("/projects/{project_id}/audit")
 def audit(project_id: str, user: dict = Depends(get_current_user)):
     return _domain(workflow.audit_timeline, user, project_id)
+
+
+@router.get("/activity")
+def activity(limit: int = Query(default=30, ge=1, le=100), user: dict = Depends(get_current_user)):
+    return _domain(workflow.activity_feed, user, limit)
 
 
 @router.post("/projects/{project_id}/milestones", status_code=201)

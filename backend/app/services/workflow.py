@@ -380,3 +380,26 @@ def audit_timeline(user: dict, project_id: str) -> list[dict]:
             (project["id"],),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def activity_feed(user: dict, limit: int = 30) -> list[dict]:
+    with read_connection() as connection:
+        rows = connection.execute(
+            """SELECT a.event_type, a.actor_type, a.details, a.created_at,
+                      a.project_id, p.title AS project_title,
+                      a.milestone_id, m.title AS milestone_title
+               FROM audit_events AS a
+               JOIN projects AS p ON p.id = a.project_id
+               LEFT JOIN milestones AS m ON m.id = a.milestone_id
+               WHERE p.client_id = %s OR p.freelancer_id = %s
+               ORDER BY a.created_at DESC, a.id DESC
+               LIMIT %s""",
+            (user["id"], user["id"], limit),
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["project_id"] = str(item["project_id"])
+        item["milestone_id"] = str(item["milestone_id"]) if item["milestone_id"] else None
+        result.append(item)
+    return result

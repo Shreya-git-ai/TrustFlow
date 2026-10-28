@@ -25,7 +25,7 @@ Assessment considers only the submitted text. Reference links are not opened. PD
 - `frontend/` — responsive React/TypeScript workspace.
 - `postman/TrustFlow.postman_collection.json` — API requests and starter assertions.
 - `render.yaml` — Render service blueprint; it describes deployment and does not deploy anything by itself.
-- `docs/` — current architecture, safety limits, and demo steps. `MIGRATION_AUDIT.md` is a historical audit snapshot.
+- `docs/` — current architecture, safety limits, and demo steps.
 
 ## Local setup
 

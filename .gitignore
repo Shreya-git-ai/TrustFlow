@@ -23,8 +23,4 @@ dist/
 .DS_Store
 Thumbs.db
 .vscode/*
-!.vscode/extensions.jsonvenv312/
-
-venv312/
-venv/
-audit.txt
+!.vscode/extensions.json

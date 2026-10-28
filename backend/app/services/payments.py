@@ -8,6 +8,32 @@ from app.services.workflow import DomainError, _audit
 from app.services.events import enqueue_event
 
 
+def list_for_user(user: dict) -> list[dict]:
+    with read_connection() as connection:
+        rows = connection.execute(
+            """SELECT payment.id, payment.milestone_id, project.id AS project_id,
+                      project.title AS project_title, milestone.title AS milestone_title,
+                      payment.amount, payment.currency, payment.status, payment.updated_at
+               FROM payments AS payment
+               JOIN milestones AS milestone ON milestone.id = payment.milestone_id
+               JOIN projects AS project ON project.id = milestone.project_id
+               WHERE project.client_id = %s OR project.freelancer_id = %s
+               ORDER BY payment.updated_at DESC, payment.id DESC
+               LIMIT 200""",
+            (user["id"], user["id"]),
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["id"] = str(item["id"])
+        item["milestone_id"] = str(item["milestone_id"])
+        item["project_id"] = str(item["project_id"])
+        item["amount"] = str(item["amount"])
+        item["currency"] = item["currency"].strip()
+        result.append(item)
+    return result
+
+
 def prepare_order(user: dict, milestone_id: str) -> dict:
     if user["role"] != "client":
         raise DomainError(403, "Only the project client can start a payment")
