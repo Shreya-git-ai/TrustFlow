@@ -6,6 +6,8 @@ The reviewer evaluates the milestone's saved acceptance criteria using the text 
 
 The report is decision support. Only the authenticated client can approve or request a revision. The backend requires a current successful report with every criterion marked `met` before it will record approval. Capture repeats the checks against durable PostgreSQL state and the PayPal authorization.
 
+Refund suggestions are also decision support. The trusted agent can submit a bounded, idempotent refund proposal, but only the authenticated project client can approve it. Approval uses a stable PayPal request id, checks the remaining captured balance, and does not cause support automation until the verified `PAYMENT.CAPTURE.REFUNDED` webhook arrives.
+
 ## What it cannot inspect today
 
 - Reference links are validated and stored, but TrustFlow does not fetch them.
@@ -21,5 +23,7 @@ The API limits request and decoded file size, allows only the documented file ty
 ## Payment safety
 
 PayPal Sandbox is the default. The API rejects client-supplied approval flags. Order, authorization and capture identifiers are persisted, provider requests use durable idempotency keys, and verified webhook event IDs are deduplicated. If capture outcome is uncertain, the payment remains pending until a verified webhook or provider reconciliation confirms the result; the backend does not blindly retry capture. Authorization expiry must be present, parseable, and in the future before capture.
+
+Refund proposals reserve refundable balance while awaiting review or PayPal confirmation. Refund webhooks are signature-verified and deduplicated before payment totals change or the Zapier refund-complete event is enqueued.
 
 TrustFlow is not a legal escrow provider. A capture is reported only after PayPal returns or later confirms a completed capture with the expected amount and currency.

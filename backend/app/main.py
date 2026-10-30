@@ -13,6 +13,7 @@ from app.db.connection import test_connection
 from app.observability import log_event, parse_traceparent, request_trace
 from app.routers.auth import router as auth_router
 from app.routers.payments import router as payments_router
+from app.routers.refunds import router as refunds_router
 from app.routers.workflow import router as workflow_router
 from app.security import allowed_origins, get_current_user
 
@@ -51,11 +52,13 @@ _configure_elastic_apm(app)
 app.include_router(auth_router)
 app.include_router(workflow_router)
 app.include_router(payments_router)
+app.include_router(refunds_router)
 # Vercel's public API rewrite preserves /api in the incoming request path.
 # Keep the unprefixed routes too for Render and the local Vite proxy.
 app.include_router(auth_router, prefix="/api")
 app.include_router(workflow_router, prefix="/api")
 app.include_router(payments_router, prefix="/api")
+app.include_router(refunds_router, prefix="/api")
 
 
 @app.middleware("http")

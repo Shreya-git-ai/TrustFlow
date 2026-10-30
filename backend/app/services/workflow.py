@@ -234,7 +234,7 @@ def get_milestone(user: dict, milestone_id: str) -> dict:
             (milestone_id,),
         ).fetchall()
         payment = connection.execute(
-            "SELECT amount, currency, status, paypal_order_id, paypal_approval_url, paypal_authorization_id, paypal_capture_id, created_at, updated_at FROM payments WHERE milestone_id = %s",
+            "SELECT amount, refunded_amount, currency, status, paypal_order_id, paypal_approval_url, paypal_authorization_id, paypal_capture_id, created_at, updated_at FROM payments WHERE milestone_id = %s",
             (milestone_id,),
         ).fetchone()
     result = dict(milestone)
@@ -244,7 +244,11 @@ def get_milestone(user: dict, milestone_id: str) -> dict:
     ]
     result["assessment_history"] = [dict(row) for row in reports]
     result["decisions"] = [dict(row) for row in decisions]
-    result["payment"] = dict(payment) if payment else None
+    result["payment"] = ({
+        **dict(payment),
+        "amount": str(payment["amount"]),
+        "refunded_amount": str(payment["refunded_amount"]),
+    } if payment else None)
     return result
 
 

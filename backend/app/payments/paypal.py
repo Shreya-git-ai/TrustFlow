@@ -149,6 +149,26 @@ class PayPalClient:
             json_body=capture_body,
         )
 
+    async def refund_capture(
+        self, capture_id: str, amount: Decimal, currency: str, request_id: str,
+        proposal_id: str,
+    ) -> tuple[httpx.Response, dict[str, Any]]:
+        access_token = await self.get_access_token()
+        return await self._request(
+            f"/v2/payments/captures/{capture_id}/refund",
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "PayPal-Request-Id": request_id,
+                "Prefer": "return=representation",
+            },
+            json_body={
+                "amount": {"currency_code": currency, "value": f"{amount:.2f}"},
+                "custom_id": proposal_id,
+            },
+        )
+
     async def get_order(self, order_id: str) -> tuple[httpx.Response, dict[str, Any]]:
         access_token = await self.get_access_token()
         return await self._request(
