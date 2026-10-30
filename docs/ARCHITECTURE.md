@@ -11,7 +11,8 @@ TrustFlow is a React/Vite frontend backed by one FastAPI application and Postgre
 5. The freelancer's evidence submission creates a numbered revision. File bytes are validated and stored privately by `backend/app/services/storage.py`; only text is sent to the assessor. The assessment route snapshots current criteria and text, invokes the Gemini provider through `backend/app/agent/orchestrator.py`, validates exact quotes and criterion coverage, then persists the report, findings, and audit event.
 6. The client decision route checks the latest successful report and current evidence revision before recording approval or a revision request. The assessment route itself never changes approval or payment state.
 7. `backend/app/routers/payments.py` calls the PayPal client in `backend/app/payments/paypal.py`; `backend/app/services/payments.py` persists each state transition and checks the current client decision, assessment, and evidence before capture. Verified webhook events and reconciliation resolve uncertain capture outcomes without blindly repeating capture.
-8. Workflow and payment services enqueue optional Zapier notifications in `integration_outbox`. `backend/app/services/events.py` leases and retries delivery; `backend/scripts/deliver_events.py` is also run by the optional Render cron service.
+8. Trusted agents submit refund proposals through `backend/app/routers/refunds.py`; `backend/app/services/refunds.py` enforces refundable-balance reservations and client-only approval before calling PayPal. The verified `PAYMENT.CAPTURE.REFUNDED` webhook updates the refund ledger and emits a minimal support-ticket payload.
+9. Workflow, payment, and refund services enqueue optional Zapier notifications in `integration_outbox`. `backend/app/services/events.py` leases and retries delivery; `backend/scripts/deliver_events.py` is also run by the optional Render cron service.
 
 ## Backend file map
 
@@ -21,7 +22,7 @@ TrustFlow is a React/Vite frontend backed by one FastAPI application and Postgre
 | Authentication | `backend/app/routers/auth.py`, `backend/app/security.py`, `backend/app/services/auth.py` | Signup, login, session lookup and revocation, CSRF, role and session security. |
 | Product API | `backend/app/routers/workflow.py`, `backend/app/services/workflow.py` | Projects, invitations, milestones, evidence, assessment persistence, decisions, audit. |
 | Assessment | `backend/app/agent/`, `backend/app/schemas/assessment.py` | Gemini provider, guarded prompt/output, validation, report data model. |
-| Payments | `backend/app/routers/payments.py`, `backend/app/services/payments.py`, `backend/app/payments/paypal.py` | Durable payment state, PayPal order/authorization/capture, webhook verification and reconciliation. |
+| Payments | `backend/app/routers/payments.py`, `backend/app/routers/refunds.py`, `backend/app/services/payments.py`, `backend/app/services/refunds.py`, `backend/app/payments/paypal.py` | Durable payment/refund state, human-reviewed refund proposals, PayPal lifecycle calls, verified webhook updates and reconciliation. |
 | Persistence | `backend/app/db/connection.py`, `backend/app/db/repository.py`, `backend/app/db/schema.sql`, `backend/app/db/migrations/` | PostgreSQL connections, shared transaction boundary, base schema and additive migration. |
 | Uploads and integrations | `backend/app/services/storage.py`, `backend/app/services/events.py`, `backend/app/integrations/zapier.py` | Private upload handling and retryable optional event delivery. |
 | Scripts and checks | `backend/scripts/`, `backend/tests/`, `postman/` | Explicit database setup, outbox delivery, offline/mocked tests, API collection. |

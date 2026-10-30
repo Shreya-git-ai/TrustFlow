@@ -1,10 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   acceptProject, assessMilestone, authorizePayment, capturePayment, createMilestone, evidenceFileUrl,
-  createPaymentOrder, createProject, currentUser, decideMilestone, getAudit, getMilestone, getPayments, getWorkspaceActivity,
+  createPaymentOrder, createProject, currentUser, decideMilestone, decideRefundProposal, getAudit, getMilestone, getPayments, getRefundProposals, getWorkspaceActivity,
   getProject, getProjects, login, logout, reconcilePayment, resendVerification, signup, submitEvidence,
   updateAccount, updateMilestone, verifyEmail,
-  type AssessmentResponse, type Milestone, type Project, type User, type WorkspaceActivity, type WorkspacePayment,
+  type AssessmentResponse, type Milestone, type Project, type RefundProposal, type User, type WorkspaceActivity, type WorkspacePayment,
 } from './api/assessment'
 import NotificationCenter from './components/audit/NotificationCenter'
 import NotificationPreferencesCard from './components/audit/NotificationPreferences'
@@ -43,6 +43,9 @@ function App() {
   const [payments, setPayments] = useState<WorkspacePayment[]>([])
   const [paymentsLoading, setPaymentsLoading] = useState(false)
   const [paymentsError, setPaymentsError] = useState('')
+  const [refundProposals, setRefundProposals] = useState<RefundProposal[]>([])
+  const [refundProposalsLoading, setRefundProposalsLoading] = useState(false)
+  const [refundProposalsError, setRefundProposalsError] = useState('')
   const [busy, setBusy] = useState(false)
   const operationCount = useRef(0)
   const [initializing, setInitializing] = useState(true)
@@ -82,14 +85,19 @@ function App() {
   const loadPayments = useCallback(async () => {
     setPaymentsLoading(true)
     setPaymentsError('')
-    try {
-      setPayments(await getPayments())
-    } catch (e) {
-      setPaymentsError(e instanceof Error ? e.message : 'Could not load payment records.')
-    } finally {
-      setPaymentsLoading(false)
-    }
-  }, [])
+    setRefundProposalsLoading(user?.role === 'client')
+    setRefundProposalsError('')
+    const [paymentResult, proposalResult] = await Promise.allSettled([
+      getPayments(),
+      user?.role === 'client' ? getRefundProposals() : Promise.resolve<RefundProposal[]>([]),
+    ])
+    if (paymentResult.status === 'fulfilled') setPayments(paymentResult.value)
+    else setPaymentsError(paymentResult.reason instanceof Error ? paymentResult.reason.message : 'Could not load payment records.')
+    if (proposalResult.status === 'fulfilled') setRefundProposals(proposalResult.value)
+    else setRefundProposalsError(proposalResult.reason instanceof Error ? proposalResult.reason.message : 'Could not load refund proposals.')
+    setPaymentsLoading(false)
+    setRefundProposalsLoading(false)
+  }, [user])
   useEffect(() => {
     function closeFloatingMenus(event: MouseEvent) {
       if (accountMenuRef.current && !accountMenuRef.current.contains(event.target as Node)) setAccountMenuOpen(false)
@@ -210,6 +218,26 @@ function App() {
     })
   }
 
+  function reviewRefundProposal(proposal: RefundProposal, decision: 'approve' | 'reject') {
+    if (decision === 'approve') {
+      const prompt = proposal.status === 'processing'
+        ? 'Retry the same PayPal refund request to check its status? PayPal receives the same idempotency key.'
+        : `Approve a ${proposal.currency} ${proposal.amount} refund to the original PayPal payment?`
+      if (!window.confirm(prompt)) return
+    }
+    if (decision === 'reject' && !window.confirm('Reject this agent-proposed refund?')) return
+    void run(async () => {
+      try {
+        const result = await decideRefundProposal(proposal.id, decision)
+        if (decision === 'reject') setNotice('Refund proposal rejected.')
+        else if (result.status === 'refunded') setNotice('PayPal confirmed the refund. Support automation will run after the verified webhook is processed.')
+        else setNotice('Refund approved. PayPal is processing it; support automation will run after the verified completion webhook.')
+      } finally {
+        await loadPayments()
+      }
+    })
+  }
+
   function navigateSection(section: WorkspaceSection) {
     setProject(null); setMilestone(null); setSettingsOpen(false); setActiveSection(section)
     setAccountMenuOpen(false); setNotificationsOpen(false)
@@ -295,7 +323,7 @@ function App() {
   }
 
   async function signOut() {
-    await run(async () => { await logout(); setUser(null); setNotificationsRead([]); setProject(null); setMilestone(null); setProjects([]); setActivity([]); setPayments([]); setSettingsOpen(false); setActiveSection('overview') })
+    await run(async () => { await logout(); setUser(null); setNotificationsRead([]); setProject(null); setMilestone(null); setProjects([]); setActivity([]); setPayments([]); setRefundProposals([]); setSettingsOpen(false); setActiveSection('overview') })
   }
 
   if (window.location.pathname === '/verify-email') return <EmailVerificationPage status={verificationStatus || 'checking'} onResend={resendConfirmation} busy={busy} error={error} />
@@ -365,7 +393,14 @@ function App() {
           onAccept={(id) => void run(async () => { await acceptProject(id); await loadProjects(); await loadActivity(); setNotice('Project invitation accepted.') })}
           onCreate={(data) => run(async () => { await createProject(data); await loadProjects(); await loadActivity(); setNotice('Project created and invitation sent to the registered freelancer.') })}
         />}
-        {!project && !settingsOpen && activeSection === 'payments' && <PaymentsPage payments={payments} loading={paymentsLoading} error={paymentsError} onRefresh={() => void loadPayments()} onOpenMilestone={(payment) => void openPaymentMilestone(payment)} onOverview={() => navigateSection('overview')}/>}
+        {!project && !settingsOpen && activeSection === 'payments' && <PaymentsPage
+          payments={payments} paymentsLoading={paymentsLoading} paymentsError={paymentsError}
+          proposals={refundProposals} proposalsLoading={refundProposalsLoading} proposalsError={refundProposalsError}
+          role={user.role} busy={busy} onRefresh={() => void loadPayments()}
+          onOpenMilestone={(payment) => void openPaymentMilestone(payment)} onOverview={() => navigateSection('overview')}
+          onRefundApprove={(proposal) => reviewRefundProposal(proposal, 'approve')}
+          onRefundReject={(proposal) => reviewRefundProposal(proposal, 'reject')}
+        />}
         {!project && !settingsOpen && activeSection === 'insights' && <InsightsPage projects={projects} role={user.role} activity={activity} loading={activityLoading} error={activityError} onRefresh={() => void loadActivity()} onOpenProject={(id) => void openProject(id)} onOpenActivity={(item) => void openWorkspaceActivity(item)}/>}
         {!project && !settingsOpen && activeSection === 'resources' && <ResourcesPage role={user.role} projects={projects} onOverview={() => navigateSection('overview')} onPayments={() => navigateSection('payments')} onOpenProject={(id) => void openProject(id)}/>}
         {project && milestone && <MilestonePage
@@ -663,7 +698,7 @@ function PaymentPanel({ milestone, user, busy, onOrder, onAuthorize, onCapture, 
     />
     <span>PAYMENT PARTNER</span>
   </div>
-  </div><span className={`status-chip status-${payment?.status || 'not-created'}`}>{(payment?.status || 'not created').replaceAll('_', ' ')}</span></div><p>{payment ? `${payment.currency} ${payment.amount}` : 'Create a PayPal order for the agreed milestone amount.'}</p>{payment?.paypal_order_id && <small>Order: {payment.paypal_order_id}</small>}{payment?.paypal_authorization_id && <small>Authorization: {payment.paypal_authorization_id}</small>}{payment?.paypal_capture_id && <small>Capture: {payment.paypal_capture_id}</small>}{payment?.status === 'created' && payment.paypal_approval_url && <a className="secondary-button link-button" href={payment.paypal_approval_url} target="_blank" rel="noreferrer">Continue to PayPal ↗</a>}{user.role === 'client' && !payment && <button className="secondary-button" disabled={busy || milestone.status === 'paid'} onClick={onOrder}>Create PayPal order</button>}{user.role === 'client' && payment?.status === 'created' && <button className="secondary-button" disabled={busy} onClick={onAuthorize}>Confirm buyer approval and authorize</button>}{user.role === 'client' && payment?.status === 'authorized' && milestone.status === 'approved' && <button className="primary-button" disabled={busy} onClick={onCapture}>Capture authorized amount <span>→</span></button>}{user.role === 'client' && payment?.status === 'capture_pending' && <button className="secondary-button" disabled={busy} onClick={onReconcile}>Reconcile with PayPal</button>}{payment?.status === 'captured' && <p className="payment-complete">Capture confirmed · {payment.paypal_capture_id}</p>}<small>TrustFlow coordinates this PayPal transaction; it does not provide legal escrow.</small></section>
+  </div><span className={`status-chip status-${payment?.status || 'not-created'}`}>{(payment?.status || 'not created').replaceAll('_', ' ')}</span></div><p>{payment ? `${payment.currency} ${payment.amount}` : 'Create a PayPal order for the agreed milestone amount.'}</p>{Number(payment?.refunded_amount || 0) > 0 && <small>Refunded: {payment?.currency} {payment?.refunded_amount}</small>}{payment?.paypal_order_id && <small>Order: {payment.paypal_order_id}</small>}{payment?.paypal_authorization_id && <small>Authorization: {payment.paypal_authorization_id}</small>}{payment?.paypal_capture_id && <small>Capture: {payment.paypal_capture_id}</small>}{payment?.status === 'created' && payment.paypal_approval_url && <a className="secondary-button link-button" href={payment.paypal_approval_url} target="_blank" rel="noreferrer">Continue to PayPal ↗</a>}{user.role === 'client' && !payment && <button className="secondary-button" disabled={busy || milestone.status === 'paid'} onClick={onOrder}>Create PayPal order</button>}{user.role === 'client' && payment?.status === 'created' && <button className="secondary-button" disabled={busy} onClick={onAuthorize}>Confirm buyer approval and authorize</button>}{user.role === 'client' && payment?.status === 'authorized' && milestone.status === 'approved' && <button className="primary-button" disabled={busy} onClick={onCapture}>Capture authorized amount <span>→</span></button>}{user.role === 'client' && payment?.status === 'capture_pending' && <button className="secondary-button" disabled={busy} onClick={onReconcile}>Reconcile with PayPal</button>}{payment?.status === 'captured' && <p className="payment-complete">Capture confirmed · {payment.paypal_capture_id}</p>}{(payment?.status === 'refunded' || payment?.status === 'partially_refunded') && <p className="payment-complete">PayPal confirmed {payment.status === 'refunded' ? 'the refund' : 'a partial refund'}.</p>}<small>TrustFlow coordinates this PayPal transaction; it does not provide legal escrow.</small></section>
 }
 
 export default App

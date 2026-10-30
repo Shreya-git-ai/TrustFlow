@@ -80,12 +80,13 @@ Vite serves the app at `http://localhost:5173` and proxies `/api` to the local b
 - `SESSION_HASH_SALT` — generate a unique random value for production.
 - `TRUSTFLOW_FRONTEND_URL` — base URL used for verification and project invitation links.
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_USE_SSL`, `SMTP_USE_STARTTLS` — optional SMTP delivery. When configured, signup requires email confirmation and project invitations also send an email. Configure these on the backend only; never commit SMTP credentials.
-- `ZAPIER_WEBHOOK_URL` — optional Catch Hook; events are placed in a PostgreSQL outbox and retried.
+- `ZAPIER_WEBHOOK_URL` — optional Catch Hook; verified refund events and other events are placed in a PostgreSQL outbox and retried.
+- `TRUSTFLOW_AGENT_TOKEN` — bearer token required for the agent refund-proposal intake endpoint.
 - `ELASTIC_APM_SERVER_URL`, optional `ELASTIC_APM_SECRET_TOKEN` — optional monitoring.
 
 ## Vercel services deployment
 
-The root `vercel.json` defines a FastAPI backend service and a Vite frontend service. In Vercel, set the project framework to **Services** and configure the backend environment variables in Project Settings. At minimum, set `DATABASE_URL`, `TRUSTFLOW_ENV=production`, and a unique `SESSION_HASH_SALT`; add Gemini, PayPal, SMTP, and Zapier values as needed. Set `PAYPAL_RETURN_URL`, `PAYPAL_CANCEL_URL`, and optionally `TRUSTFLOW_FRONTEND_URL` to the Vercel production domain. Vercel deployment hostnames are included in backend origin checks automatically.
+The root `vercel.json` defines a FastAPI backend service and a Vite frontend service. In Vercel, set the project framework to **Services** and configure the backend environment variables in Project Settings. At minimum, set `DATABASE_URL`, `TRUSTFLOW_ENV=production`, and a unique `SESSION_HASH_SALT`; add Gemini, PayPal, SMTP, Zapier, and `TRUSTFLOW_AGENT_TOKEN` values as needed. Set `PAYPAL_RETURN_URL`, `PAYPAL_CANCEL_URL`, and optionally `TRUSTFLOW_FRONTEND_URL` to the Vercel production domain. Vercel deployment hostnames are included in backend origin checks automatically.
 
 Apply the database schema and migrations to the Vercel database before using the app. Evidence files up to 3 MB are stored in PostgreSQL so they remain available across serverless function instances. This increases database storage use; larger files should use an external object store.
 
@@ -99,12 +100,15 @@ The app prefers Argon2id through `argon2-cffi`. The existing offline development
 - `GET /milestones/{id}`, `POST /milestones/{id}/evidence`, `GET /milestones/{id}/evidence/{evidence_id}/file`
 - `POST /milestones/{id}/assessments`, `POST /milestones/{id}/decision`
 - `POST /milestones/{id}/payment/order`, `POST /milestones/{id}/payment/authorize`, `POST /milestones/{id}/payment/capture`, `POST /milestones/{id}/payment/reconcile`
+- `GET /refund-proposals`, `POST /refund-proposals/{id}/decision`, trusted-agent `POST /agent/refund-proposals`
 - `POST /webhooks/paypal`
 - `GET /health`, `GET /agent/health`, authenticated `GET /ready`
 
 The same backend routes are also mounted under `/api` for the Vercel public API rewrite. Unprefixed paths remain available for local development and the existing Render deployment.
 
 Cookie-authenticated mutations require the `X-CSRF-Token` returned by login or `/auth/me`. The browser stores the session in an HttpOnly cookie. A client can request approval only with a current successful assessment where every criterion is met. Capture verifies the persisted client decision, evidence revision, assessment report, payment state, and PayPal authorization. A caller-supplied approval flag is not used.
+
+Agent refund proposals appear in the client payment dashboard and require an explicit client decision before PayPal receives a refund request. Configure PayPal's `PAYMENT.CAPTURE.REFUNDED` event and a Zapier Catch Hook to automate ticket resolution. Setup steps and the agent proposal payload are in [the refund and Zapier guide](docs/REFUNDS_AND_ZAPIER.md).
 
 The old unscoped `/assessments`, `/agent/assess`, and `/paypal/*` payment routes are not registered by the application. Use the milestone-scoped authenticated endpoints above.
 

@@ -25,7 +25,7 @@ export type Report = {
 }
 export type Decision = { decision: string; evidence_revision: number; note: string; created_at: string }
 export type Payment = {
-  amount: string; currency: string; status: string; paypal_order_id?: string | null
+  amount: string; refunded_amount?: string; currency: string; status: string; paypal_order_id?: string | null
   paypal_authorization_id?: string | null; paypal_capture_id?: string | null; paypal_approval_url?: string | null
 }
 export type WorkspaceActivity = {
@@ -34,7 +34,15 @@ export type WorkspaceActivity = {
 }
 export type WorkspacePayment = {
   id: string; milestone_id: string; project_id: string; project_title: string; milestone_title: string
-  amount: string; currency: string; status: string; updated_at: string
+  amount: string; refunded_amount?: string; currency: string; status: string; updated_at: string
+}
+export type RefundProposal = {
+  id: string; payment_id: string; milestone_id: string; project_id: string
+  project_title: string; milestone_title: string; amount: string; currency: string
+  reason: string; agent_name: string; status: 'pending' | 'processing' | 'refunded' | 'rejected' | 'failed'
+  zendesk_ticket_id: string | null; slack_channel_id: string | null; slack_thread_ts: string | null
+  paypal_refund_id: string | null; proposed_at: string; reviewed_at: string | null
+  refunded_amount?: string
 }
 export type AssessmentResponse = {
   assessment: {
@@ -113,6 +121,14 @@ export async function decideMilestone(id: string, decision: string, note: string
 export async function getAudit(projectId: string) { return request<{ event_type: string; actor_type: string; details: Record<string, unknown>; created_at: string }[]>(`/projects/${projectId}/audit`) }
 export async function getWorkspaceActivity() { return request<WorkspaceActivity[]>('/activity') }
 export async function getPayments() { return request<WorkspacePayment[]>('/payments') }
+export async function getRefundProposals(status = 'all') {
+  return request<RefundProposal[]>(`/refund-proposals?status=${encodeURIComponent(status)}`)
+}
+export async function decideRefundProposal(id: string, decision: 'approve' | 'reject', note = '') {
+  return request<{ id: string; status: RefundProposal['status']; paypal_refund_id?: string; message?: string }>(
+    `/refund-proposals/${id}/decision`, { method: 'POST', body: JSON.stringify({ decision, note }) },
+  )
+}
 export async function createPaymentOrder(id: string) { return request<{ payment_id: string; order_id: string; approval_url: string; status: string }>(`/milestones/${id}/payment/order`, { method: 'POST', body: '{}' }) }
 export async function authorizePayment(id: string) { return request<{ status: string; authorization_id: string }>(`/milestones/${id}/payment/authorize`, { method: 'POST', body: '{}' }) }
 export async function capturePayment(id: string) { return request<{ status: string; capture_id?: string; message?: string }>(`/milestones/${id}/payment/capture`, { method: 'POST', body: '{}' }) }

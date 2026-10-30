@@ -2264,6 +2264,103 @@ body {
 .project-grid-status { min-height: 25px; padding: 0 9px; font-size: 10px; }
 .project-grid-action { min-height: 32px; padding: 0 10px; font-size: 11px; }
 
+/* Project grid controls and richer project rows. */
+.projects-grid-wrap { position: relative; overflow: visible; }
+.projects-grid-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 2px 0 11px; }
+.projects-grid-search { width: min(100%, 330px); min-height: 37px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid #e7e6f0; border-radius: 9px; color: #88899c; background: #fff; }
+.projects-grid-search:focus-within { border-color: #aaa1e9; box-shadow: 0 0 0 3px #766be012; }
+.projects-grid-search > span { color: #7771b1; font-size: 18px; line-height: 1; }
+.projects-grid-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: #35364c; background: transparent; font: inherit; font-size: 11px; }
+.projects-grid-search input::placeholder { color: #a0a1af; }
+.projects-grid-search > button { width: 21px; height: 21px; flex: 0 0 auto; border: 0; border-radius: 6px; color: #83849a; background: #f3f2f8; font-size: 16px; line-height: 1; cursor: pointer; }
+.projects-grid-tools { display: flex; align-items: center; justify-content: flex-end; gap: 11px; }
+.projects-grid-result-count { color: #8c8d9e; font-size: 10px; white-space: nowrap; }
+.projects-grid-text-button { border: 0; padding: 5px 2px; color: #6559c8; background: transparent; font: inherit; font-size: 10px; font-weight: 700; white-space: nowrap; cursor: pointer; }
+.projects-grid-export { min-height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid #e5e3f0; border-radius: 8px; color: #6258b7; background: #fff; font: inherit; font-size: 10px; font-weight: 700; white-space: nowrap; cursor: pointer; }
+.projects-grid-export:hover:not(:disabled) { border-color: #d4cff1; background: #f8f6ff; }
+.projects-grid-export:disabled { opacity: .5; cursor: not-allowed; }
+.projects-grid-export > span { font-size: 14px; }
+.projects-grid .ag-root-wrapper { overflow: visible; }
+.projects-grid .ag-header-cell-menu-button { color: #9292a4; }
+.projects-grid .ag-header-cell-filter-button { color: #7669ce; }
+.projects-grid .ag-cell-focus:not(.ag-cell-range-selected):focus-within { border: 1px solid #a69de8; outline: 0; }
+.project-grid-project { min-width: 0; display: flex; flex-direction: column; gap: 4px; line-height: 1.25; }
+.project-grid-project strong { overflow: hidden; color: #30314b; font-size: 12px; font-weight: 730; text-overflow: ellipsis; white-space: nowrap; }
+.project-grid-project small { overflow: hidden; max-width: 100%; color: #9293a2; font-size: 10px; font-weight: 450; text-overflow: ellipsis; white-space: nowrap; }
+.project-grid-attention-pill { display: inline-flex; max-width: 100%; align-items: center; overflow: hidden; padding: 5px 8px; border-radius: 7px; color: #747588; background: #f3f3f7; font-size: 10px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.project-grid-attention-pill.has-actions { color: #895d27; background: #fff4df; }
+.project-grid-payments { color: #67687c; font-size: 11px; }
+.projects-grid-empty { position: absolute; z-index: 2; inset: 82px 0 47px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 7px; border: 1px solid #ecebf4; border-radius: 0 0 10px 10px; background: #fff; text-align: center; }
+.projects-grid-empty strong { color: #46475e; font-size: 12px; }
+.projects-grid-empty > span { color: #9091a1; font-size: 10px; }
+.projects-grid-empty .projects-grid-text-button { margin-top: 2px; }
+@media (max-width: 650px) {
+  .projects-grid-toolbar { align-items: stretch; flex-direction: column; }
+  .projects-grid-search { width: 100%; }
+  .projects-grid-tools { justify-content: space-between; }
+  .projects-grid-empty { inset: 122px 0 47px; padding: 12px; }
+}
+
+/* Refund review queue shown to project clients before any PayPal refund call. */
+.refund-review-section { position: relative; margin-top: 18px; padding: 22px; border: 1px solid #e8e7f2; border-radius: 12px; background: #fff; box-shadow: 0 9px 28px #28244d09; }
+.refund-review-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 17px; }
+.refund-review-heading h3 { margin: 6px 0 0; color: #30314a; font-size: 17px; letter-spacing: -.3px; }
+.refund-review-heading p { margin: 7px 0 0; color: #77798d; font-size: 11px; line-height: 1.55; }
+.refund-queue-tabs { display: flex; align-items: center; gap: 4px; overflow-x: auto; margin-bottom: 13px; padding: 4px; border: 1px solid #eeedf5; border-radius: 9px; background: #fafaff; }
+.refund-queue-tabs button { display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto; min-height: 31px; padding: 0 10px; border: 1px solid transparent; border-radius: 7px; color: #77788c; background: transparent; font: inherit; font-size: 10px; cursor: pointer; }
+.refund-queue-tabs button.active { border-color: #e5e2f8; color: #5e52be; background: #fff; box-shadow: 0 2px 6px #27253f0a; font-weight: 720; }
+.refund-queue-tabs button span { min-width: 18px; padding: 2px 5px; border-radius: 10px; color: #77788b; background: #f0eff5; text-align: center; font-size: 8px; font-weight: 750; }
+.refund-queue-tabs button.active span { color: #6358c3; background: #efedff; }
+.refund-grid-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 2px 0 10px; }
+.refund-grid-search { width: min(100%, 370px); min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid #e7e6f0; border-radius: 8px; color: #85869a; background: #fff; }
+.refund-grid-search:focus-within { border-color: #aaa1e9; box-shadow: 0 0 0 3px #766be012; }
+.refund-grid-search > span { color: #7771b1; font-size: 18px; line-height: 1; }
+.refund-grid-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: #35364c; background: transparent; font: inherit; font-size: 10px; }
+.refund-grid-search input::placeholder { color: #a0a1af; }
+.refund-grid-search > button { width: 21px; height: 21px; flex: 0 0 auto; border: 0; border-radius: 6px; color: #83849a; background: #f3f2f8; font-size: 16px; line-height: 1; cursor: pointer; }
+.refund-grid-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; color: #88899c; font-size: 10px; white-space: nowrap; }
+.refund-grid-clear { border: 0; padding: 5px 2px; color: #6257c5; background: transparent; font: inherit; font-size: 10px; font-weight: 700; cursor: pointer; }
+.refund-grid-container { position: relative; min-width: 0; }
+.refund-proposals-grid { width: 100%; min-width: 0; --ag-font-family: inherit; --ag-font-size: 11px; --ag-header-font-size: 9px; --ag-header-background-color: #fafaff; --ag-header-text-color: #85869b; --ag-foreground-color: #4d4f67; --ag-border-color: #eff0f5; --ag-row-hover-color: #faf9ff; --ag-accent-color: #7062d2; --ag-cell-horizontal-padding: 10px; --ag-grid-size: 6px; --ag-row-height: 64px; --ag-header-height: 43px; }
+.refund-proposals-grid .ag-root-wrapper { border: 0; border-radius: 0; }
+.refund-proposals-grid .ag-header { border-bottom: 1px solid #eff0f5; }
+.refund-proposals-grid .ag-header-cell-text { color: #7b7d90; font-size: 10px; font-weight: 680; letter-spacing: .35px; text-transform: uppercase; }
+.refund-proposals-grid .ag-floating-filter-input input { min-height: 27px; border-radius: 6px; font-size: 9px; }
+.refund-proposals-grid .ag-cell { display: flex; align-items: center; font-size: 11px; }
+.refund-proposals-grid .ag-paging-panel { min-height: 40px; color: #77798d; font-size: 10px; }
+.refund-grid-project { min-width: 0; display: flex; flex-direction: column; gap: 4px; line-height: 1.25; }
+.refund-grid-project strong { overflow: hidden; color: #30314b; font-size: 11px; font-weight: 730; text-overflow: ellipsis; white-space: nowrap; }
+.refund-grid-project small { overflow: hidden; color: #8d8ea0; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.refund-grid-amount { color: #3a3b54; font-weight: 740; white-space: nowrap; }
+.refund-grid-reason { display: -webkit-box; overflow: hidden; color: #66687d; font-size: 10px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.refund-grid-status { display: inline-flex; align-items: center; min-height: 23px; padding: 0 8px; border-radius: 7px; color: #696a7d; background: #f2f2f7; font-size: 9px; font-weight: 730; text-transform: capitalize; white-space: nowrap; }
+.refund-grid-status.pending { color: #906929; background: #fff4df; }
+.refund-grid-status.processing { color: #5149ad; background: #efedff; }
+.refund-grid-status.refunded { color: #34775f; background: #e8f6ef; }
+.refund-grid-status.failed { color: #a35444; background: #fff0ec; }
+.refund-grid-status.rejected { color: #737487; background: #f1f1f5; }
+.refund-grid-actions { display: inline-flex; align-items: center; gap: 6px; }
+.refund-grid-approve,.refund-grid-reject,.refund-grid-retry { min-height: 29px; padding: 0 8px; border: 1px solid #e4e1f1; border-radius: 7px; font: inherit; font-size: 9px; font-weight: 720; white-space: nowrap; cursor: pointer; }
+.refund-grid-approve,.refund-grid-retry { border-color: #6d60cf; color: #fff; background: #7062d2; }
+.refund-grid-approve:hover:not(:disabled),.refund-grid-retry:hover:not(:disabled) { border-color: #5d50be; background: #5f52c5; }
+.refund-grid-reject { color: #68697e; background: #fff; }
+.refund-grid-reject:hover:not(:disabled) { border-color: #e7cccc; color: #9e5148; background: #fff8f7; }
+.refund-grid-approve:disabled,.refund-grid-reject:disabled,.refund-grid-retry:disabled { opacity: .5; cursor: wait; }
+.refund-grid-reviewed { color: #85869a; font-size: 9px; white-space: nowrap; }
+.refund-grid-empty { min-height: 170px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: #8a8b9d; font-size: 10px; text-align: center; }
+.refund-grid-empty strong { color: #48495f; font-size: 12px; }
+.refund-grid-empty.overlay { position: absolute; z-index: 3; inset: 0; min-height: 0; border: 1px solid #ecebf4; border-radius: 9px; background: #ffffffed; }
+.refund-grid-empty.error { color: #9c4841; }
+.status-refunded { color: #34775f; background: #e8f6ef; }
+.status-partially_refunded { color: #5149ad; background: #efedff; }
+@media (max-width: 700px) {
+  .refund-review-section { padding: 16px; }
+  .refund-review-heading { align-items: flex-start; flex-direction: column; }
+  .refund-grid-toolbar { align-items: stretch; flex-direction: column; }
+  .refund-grid-search { width: 100%; }
+  .refund-grid-toolbar-actions { justify-content: space-between; }
+}
+
 /* Accessible, consistent keyboard focus and motion. */
 button:focus-visible,
 a:focus-visible,

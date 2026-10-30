@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from app.observability import log_event
 from app.payments.paypal import PayPalClient
 from app.security import get_current_user, require_csrf
-from app.services import payments, workflow
+from app.services import payments, refunds, workflow
 from app.services.events import deliver_pending
 
 router = APIRouter(tags=["payments"])
@@ -31,6 +31,21 @@ def _approval_url(data: dict) -> str | None:
         parsed = urlsplit(value or "")
         if parsed.scheme == "https" and parsed.hostname and (parsed.hostname == "paypal.com" or parsed.hostname.endswith(".paypal.com")):
             return value
+    return None
+
+
+def _refund_capture_id(resource: dict) -> str | None:
+    related = (resource.get("supplementary_data") or {}).get("related_ids") or {}
+    capture_id = related.get("capture_id")
+    if isinstance(capture_id, str) and capture_id:
+        return capture_id
+    for link in resource.get("links", []) or []:
+        if not isinstance(link, dict) or link.get("rel") != "up":
+            continue
+        path = urlsplit(link.get("href") or "").path.rstrip("/")
+        parts = path.split("/")
+        if len(parts) >= 2 and parts[-2] == "captures" and parts[-1]:
+            return parts[-1]
     return None
 
 
@@ -234,6 +249,22 @@ async def paypal_webhook(request: Request, background_tasks: BackgroundTasks):
             amount_data = resource.get("amount") or {}
             try:
                 processed = bool(order_id and resource.get("id") and resource.get("status") == "COMPLETED" and payments.find_capture_by_order(order_id, resource["id"], Decimal(str(amount_data.get("value"))), amount_data.get("currency_code", "")))
+            except (InvalidOperation, TypeError):
+                processed = False
+        elif event.get("event_type") == "PAYMENT.CAPTURE.REFUNDED":
+            resource = event.get("resource") or {}
+            amount_data = resource.get("amount") or {}
+            try:
+                processed = bool(_domain(
+                    refunds.record_paypal_refund,
+                    _refund_capture_id(resource) or "",
+                    resource.get("id") or "",
+                    Decimal(str(amount_data.get("value"))),
+                    amount_data.get("currency_code", ""),
+                    str(resource.get("status", "COMPLETED")).upper(),
+                    webhook_event_id=event["id"],
+                    proposal_id=resource.get("custom_id") if isinstance(resource.get("custom_id"), str) else None,
+                ))
             except (InvalidOperation, TypeError):
                 processed = False
         _domain(payments.complete_webhook, event["id"], processed)

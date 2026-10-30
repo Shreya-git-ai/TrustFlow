@@ -13,7 +13,7 @@ def list_for_user(user: dict) -> list[dict]:
         rows = connection.execute(
             """SELECT payment.id, payment.milestone_id, project.id AS project_id,
                       project.title AS project_title, milestone.title AS milestone_title,
-                      payment.amount, payment.currency, payment.status, payment.updated_at
+                      payment.amount, payment.refunded_amount, payment.currency, payment.status, payment.updated_at
                FROM payments AS payment
                JOIN milestones AS milestone ON milestone.id = payment.milestone_id
                JOIN projects AS project ON project.id = milestone.project_id
@@ -29,6 +29,7 @@ def list_for_user(user: dict) -> list[dict]:
         item["milestone_id"] = str(item["milestone_id"])
         item["project_id"] = str(item["project_id"])
         item["amount"] = str(item["amount"])
+        item["refunded_amount"] = str(item["refunded_amount"])
         item["currency"] = item["currency"].strip()
         result.append(item)
     return result
