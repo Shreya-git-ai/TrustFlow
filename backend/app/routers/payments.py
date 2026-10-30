@@ -196,7 +196,11 @@ def _walk_captures(value):
 
 
 @router.post("/milestones/{milestone_id}/payment/reconcile")
-async def reconcile_capture(milestone_id: str, user: dict = Depends(require_csrf)):
+async def reconcile_capture(
+    milestone_id: str,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(require_csrf),
+):
     payment = _domain(payments.payment_for_client, user, milestone_id)
     if payment["status"] != "capture_pending" or not payment.get("paypal_order_id"):
         raise HTTPException(409, "This payment does not need reconciliation")
@@ -207,6 +211,7 @@ async def reconcile_capture(milestone_id: str, user: dict = Depends(require_csrf
     if capture is None:
         return JSONResponse(status_code=202, content={"status": "capture_pending", "message": "PayPal has not reported a completed capture yet"})
     saved = _domain(payments.mark_reconciled_capture, user, milestone_id, capture)
+    background_tasks.add_task(deliver_pending)
     return {"status": saved["status"], "capture_id": saved["paypal_capture_id"]}
 
 

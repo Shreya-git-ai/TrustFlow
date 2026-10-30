@@ -78,15 +78,15 @@ Vite serves the app at `http://localhost:5173` and proxies `/api` to the local b
 - `CORS_ORIGINS` — exact frontend origins, comma separated.
 - `TRUSTFLOW_ENV` — set to `production` when deployed; this enables Secure session cookies.
 - `SESSION_HASH_SALT` — generate a unique random value for production.
-- `TRUSTFLOW_FRONTEND_URL` — base URL used for verification and project invitation links.
+- `TRUSTFLOW_FRONTEND_URL` — public frontend origin used for verification, invitation emails, and authenticated milestone links in Zapier events. Set this in deployed environments.
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_USE_SSL`, `SMTP_USE_STARTTLS` — optional SMTP delivery. When configured, signup requires email confirmation and project invitations also send an email. Configure these on the backend only; never commit SMTP credentials.
-- `ZAPIER_WEBHOOK_URL` — optional Catch Hook; verified refund events and other events are placed in a PostgreSQL outbox and retried.
+- `ZAPIER_WEBHOOK_URL` — server-only Zapier Catch Hook URL (or same-owner combined Catch Hook URL). Workflow and verified refund events are transactionally placed in the PostgreSQL outbox and retried; events remain queued if this setting is absent.
 - `TRUSTFLOW_AGENT_TOKEN` — bearer token required for the agent refund-proposal intake endpoint.
 - `ELASTIC_APM_SERVER_URL`, optional `ELASTIC_APM_SECRET_TOKEN` — optional monitoring.
 
 ## Vercel services deployment
 
-The root `vercel.json` defines a FastAPI backend service and a Vite frontend service. In Vercel, set the project framework to **Services** and configure the backend environment variables in Project Settings. At minimum, set `DATABASE_URL`, `TRUSTFLOW_ENV=production`, and a unique `SESSION_HASH_SALT`; add Gemini, PayPal, SMTP, Zapier, and `TRUSTFLOW_AGENT_TOKEN` values as needed. Set `PAYPAL_RETURN_URL`, `PAYPAL_CANCEL_URL`, and optionally `TRUSTFLOW_FRONTEND_URL` to the Vercel production domain. Vercel deployment hostnames are included in backend origin checks automatically.
+The root `vercel.json` defines a FastAPI backend service and a Vite frontend service. In Vercel, set the project framework to **Services** and configure the backend environment variables in Project Settings. At minimum, set `DATABASE_URL`, `TRUSTFLOW_ENV=production`, a unique `SESSION_HASH_SALT`, and `TRUSTFLOW_FRONTEND_URL` to the public frontend origin; add Gemini, PayPal, SMTP, Zapier, and `TRUSTFLOW_AGENT_TOKEN` values as needed. Set `PAYPAL_RETURN_URL` and `PAYPAL_CANCEL_URL` to the Vercel production domain. Vercel deployment hostnames are included in backend origin checks automatically.
 
 Apply the database schema and migrations to the Vercel database before using the app. Evidence files up to 3 MB are stored in PostgreSQL so they remain available across serverless function instances. This increases database storage use; larger files should use an external object store.
 
@@ -109,6 +109,8 @@ The same backend routes are also mounted under `/api` for the Vercel public API 
 Cookie-authenticated mutations require the `X-CSRF-Token` returned by login or `/auth/me`. The browser stores the session in an HttpOnly cookie. A client can request approval only with a current successful assessment where every criterion is met. Capture verifies the persisted client decision, evidence revision, assessment report, payment state, and PayPal authorization. A caller-supplied approval flag is not used.
 
 Agent refund proposals appear in the client payment dashboard and require an explicit client decision before PayPal receives a refund request. Configure PayPal's `PAYMENT.CAPTURE.REFUNDED` event and a Zapier Catch Hook to automate ticket resolution. Setup steps and the agent proposal payload are in [the refund and Zapier guide](docs/REFUNDS_AND_ZAPIER.md).
+
+Zapier also receives evidence-submitted, assessment-completed, revision-requested, milestone-approved, and confirmed-payment-captured notifications. Event creation is server-side and transactional; delivery uses the existing retryable outbox. Configure a scheduled outbox worker in deployments without the Render cron service.
 
 The old unscoped `/assessments`, `/agent/assess`, and `/paypal/*` payment routes are not registered by the application. Use the milestone-scoped authenticated endpoints above.
 

@@ -147,6 +147,38 @@ function App() {
   }, [loadActivity])
 
   useEffect(() => {
+    if (!user) return
+    const params = new URLSearchParams(window.location.search)
+    const projectId = params.get('project_id') ?? ''
+    const milestoneId = params.get('milestone_id') ?? ''
+    if (!projectId || !milestoneId) return
+
+    let active = true
+    async function openLinkedMilestone() {
+      try {
+        const [selectedProject, selectedMilestone] = await Promise.all([
+          getProject(projectId),
+          getMilestone(milestoneId),
+        ])
+        if (selectedMilestone.project_id !== selectedProject.id) throw new Error('Link mismatch')
+        const selectedAudit = await getAudit(projectId)
+        if (!active) return
+        setProject(selectedProject)
+        setMilestone(selectedMilestone)
+        setAudit(selectedAudit)
+        setSettingsOpen(false)
+        setActiveSection('overview')
+      } catch {
+        if (active) setError('This milestone link is unavailable or your account cannot access it.')
+      } finally {
+        if (active) window.history.replaceState({}, '', window.location.pathname)
+      }
+    }
+    void openLinkedMilestone()
+    return () => { active = false }
+  }, [user])
+
+  useEffect(() => {
     if (window.location.pathname !== '/verify-email') return
     let active = true
     const token = window.location.hash.slice(1)
@@ -654,6 +686,7 @@ function MilestonePage({ milestone, project, user, busy, audit, onBack, onRefres
 }) {
   const report: AssessmentResponse | undefined = milestone.assessment_history?.[0]?.result_json
   const isClient = user.role === 'client'
+  const revisionFeedback = (milestone.decisions || []).filter((decision) => decision.decision === 'revision_requested').slice(0, 5)
   async function evidenceSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = event.currentTarget
@@ -671,6 +704,7 @@ function MilestonePage({ milestone, project, user, busy, audit, onBack, onRefres
   return <><button className="back-button" onClick={onBack}>← {project.title}</button><div className="page-heading milestone-title-heading"><div><span className="eyebrow">MILESTONE · REVISION {milestone.evidence_revision}</span><h1>{milestone.title}</h1><p>{milestone.currency} {milestone.amount}{milestone.due_at ? ` · Due ${new Date(milestone.due_at).toLocaleDateString()}` : ''}</p></div><span className={`status-chip status-${milestone.status}`}>{milestone.status.replaceAll('_', ' ')}</span></div>
     <div className="milestone-work-grid"><div className="work-column"><section className="surface criteria-card"><div className="section-head"><div><span className="eyebrow">THE AGREEMENT</span><h2>Acceptance criteria</h2></div></div><ol className="criteria-list">{milestone.acceptance_criteria.map((item, index) => <li key={`${index}-${item}`}><span>{String(index + 1).padStart(2,'0')}</span>{item}</li>)}</ol></section>{user.role === 'client' && milestone.evidence_revision === 0 && !milestone.payment && <EditMilestoneForm milestone={milestone} busy={busy} onUpdate={onUpdate}/>}
       {user.role === 'freelancer' && <section className="surface"><div className="section-head"><div><span className="eyebrow">SUBMISSION</span><h2>Submit evidence</h2><p>Text, reference links, or a file. Links and files are stored but not opened or extracted by assessment.</p></div></div><form className="stack-form" onSubmit={evidenceSubmit}><label>What did you deliver?<textarea name="description" rows={5} maxLength={20000} placeholder="Add specific details and evidence excerpts…"/><small>Up to 20,000 characters. Any attachment is saved privately; its contents are not analyzed.</small></label><label>Reference links <textarea name="links" rows={2} placeholder="One http(s) URL per line"/></label><label>Attach a file<input name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.txt,.csv,application/pdf,image/png,image/jpeg,text/plain,text/csv"/><small>PDF, PNG, JPEG, TXT, or CSV · 3 MB maximum.</small></label><button className="primary-button" disabled={busy}>Submit evidence revision <span>→</span></button></form></section>}
+      {!isClient && revisionFeedback.length > 0 && <section className="surface decision-card"><div className="section-head"><div><span className="eyebrow">CLIENT FEEDBACK</span><h2>Revision requests</h2><p>Feedback for this project, visible to its assigned freelancer.</p></div></div><div className="decision-history">{revisionFeedback.map((decision, index) => <article key={`${decision.decision}-${decision.created_at}-${index}`}><span>Revision requested · evidence revision {decision.evidence_revision}</span>{decision.note && <p>{decision.note}</p>}<small>{new Date(decision.created_at).toLocaleString()}</small></article>)}</div></section>}
       <section className="surface"><div className="section-head"><div><span className="eyebrow">EVIDENCE HISTORY</span><h2>Submissions</h2></div><span className="subtle-count">{milestone.evidence_history?.length || 0}</span></div>{!milestone.evidence_history?.length ? <p className="muted">No evidence has been submitted yet.</p> : <div className="history-list">{milestone.evidence_history.map((item) => <article className="history-item" key={item.id}><span className="history-rev">R{item.evidence_revision}</span><div><strong>{new Date(item.submitted_at).toLocaleString()}</strong><p>{item.description || 'No text description submitted.'}</p>{item.file_name && <><small>Attachment saved: {item.file_name} · not inspected</small>{item.file_url && <a className="file-download" href={evidenceFileUrl(item.file_url)}>Download file</a>}</>}{item.evidence_links?.map((link) => <small key={link} className="link-line">{link} · not opened</small>)}</div></article>)}</div>}</section>
       {isClient && <section className="surface review-card"><div className="section-head"><div><span className="eyebrow">AI ASSISTED REVIEW</span><h2>Assessment</h2><p>Assessment is advisory. It cannot approve this milestone or authorize payment.</p></div></div>{latestReportCurrent && report ? <AssessmentView result={report}/>:<div className="empty-inline"><span>✦</span><div><strong>{milestone.evidence_history?.length ? 'No current assessment' : 'Waiting for evidence'}</strong><p>Run an assessment after the freelancer submits a revision.</p></div></div>}{milestone.evidence_history?.length ? <button className="secondary-button" disabled={busy} onClick={onAssess}>Run assessment for revision {milestone.evidence_revision}</button> : null}{report && milestone.assessment_history?.[0]?.is_stale && <div className="notice-box">This assessment is stale because a newer evidence revision exists.</div>}</section>}
       {isClient && <section className="surface decision-card"><div className="section-head"><div><span className="eyebrow">CLIENT DECISION</span><h2>Your review decision</h2><p>Only the project client can approve or request a revision.</p></div></div><label className="decision-note">Note to freelancer<textarea id="decision-note" rows={2} maxLength={2000} placeholder="What should change or be kept in mind?"/></label><div className="decision-actions"><button className="secondary-button" disabled={busy || !currentReport || milestone.status === 'approved' || milestone.status === 'paid'} onClick={() => onDecision('revision_requested', (document.getElementById('decision-note') as HTMLTextAreaElement).value)}>Request revision</button><button className="primary-button" disabled={busy || !report?.assessment?.all_supported || !currentReport || milestone.status === 'approved' || milestone.status === 'paid'} onClick={() => { if (window.confirm('Approve this milestone based on the current evidence revision?')) onDecision('approved', '') }}>Approve milestone <span>✓</span></button></div>{milestone.status === 'approved' && <button className="text-button revoke-button" disabled={busy || milestone.payment?.status === 'capture_pending' || milestone.payment?.status === 'captured'} onClick={() => { if (window.confirm('Revoke this approval before capture starts?')) onDecision('revoked', 'Client revoked approval') }}>Revoke approval</button>}{milestone.decisions?.length ? <div className="decision-history"><strong>Decision history</strong>{milestone.decisions.slice(0, 5).map((decision, index) => <article key={`${decision.decision}-${decision.created_at}-${index}`}><span>{decision.decision.replaceAll('_', ' ')} · revision {decision.evidence_revision}</span>{decision.note && <p>{decision.note}</p>}<small>{new Date(decision.created_at).toLocaleString()}</small></article>)}</div> : null}</section>}

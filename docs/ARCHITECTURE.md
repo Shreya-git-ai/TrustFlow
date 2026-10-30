@@ -12,7 +12,7 @@ TrustFlow is a React/Vite frontend backed by one FastAPI application and Postgre
 6. The client decision route checks the latest successful report and current evidence revision before recording approval or a revision request. The assessment route itself never changes approval or payment state.
 7. `backend/app/routers/payments.py` calls the PayPal client in `backend/app/payments/paypal.py`; `backend/app/services/payments.py` persists each state transition and checks the current client decision, assessment, and evidence before capture. Verified webhook events and reconciliation resolve uncertain capture outcomes without blindly repeating capture.
 8. Trusted agents submit refund proposals through `backend/app/routers/refunds.py`; `backend/app/services/refunds.py` enforces refundable-balance reservations and client-only approval before calling PayPal. The verified `PAYMENT.CAPTURE.REFUNDED` webhook updates the refund ledger and emits a minimal support-ticket payload.
-9. Workflow, payment, and refund services enqueue optional Zapier notifications in `integration_outbox`. `backend/app/services/events.py` leases and retries delivery; `backend/scripts/deliver_events.py` is also run by the optional Render cron service.
+9. Workflow, payment, and refund services enqueue Zapier notifications in `integration_outbox` inside the business transaction. The outbox derives stable event IDs from unique business dedupe keys and keeps the database creation time as the UTC event time. `backend/app/services/events.py` leases rows and sends outside the transaction; failures keep rows pending with attempt count, sanitized last error, next retry time, and a capped exponential delay. `backend/scripts/deliver_events.py` is run by the Render cron service; other deployments need an equivalent scheduled worker.
 
 ## Backend file map
 
@@ -39,5 +39,7 @@ TrustFlow is a React/Vite frontend backed by one FastAPI application and Postgre
 ## Database setup
 
 `backend/app/db/schema.sql` creates or preserves the original core tables. `backend/app/db/migrations/001_mvp.sql` adds authentication/session, membership, revision, assessment, decision, payment, webhook, and outbox state. Run `python scripts/setup_db.py` from `backend/` after configuring `DATABASE_URL`. App startup does not apply schema changes. The setup command is idempotent for the checked-in schema and migration.
+
+The existing outbox schema already has the fields needed for event IDs (derived from its unique dedupe key), event time (`created_at`), attempt tracking, delivery state, retry time, lock expiry, sanitized error, and delivery time. No new migration is required for workflow event expansion.
 
 The automated suite uses mocks and does not connect to PostgreSQL, Gemini, PayPal, or Zapier. A database URL and provider credentials are required to exercise those integrations locally. The prior migration audit's live Neon probe was blocked by DNS, so live database application remains unverified.
