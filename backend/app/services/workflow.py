@@ -10,7 +10,7 @@ from uuid import uuid4
 from psycopg.types.json import Jsonb
 
 from app.db.repository import read_connection, transaction
-from app.services.events import enqueue_event
+from app.services.events import enqueue_event, milestone_review_url
 
 
 class DomainError(Exception):
@@ -210,7 +210,20 @@ def add_evidence(user: dict, milestone_id: str, description: str, links: list[st
             (revision, milestone_id),
         )
         _audit(connection, "evidence.submitted", user, project_id=milestone["project_id"], milestone_id=milestone_id, details={"evidence_revision": revision, "file_attached": bool(file_key)})
-        enqueue_event(connection, "evidence.submitted", {"project_id": str(milestone["project_id"]), "milestone_id": str(milestone_id), "evidence_revision": revision, "file_attached": bool(file_key)})
+        enqueue_event(
+            connection,
+            "evidence.submitted",
+            {
+                "project_id": str(milestone["project_id"]),
+                "milestone_id": str(milestone_id),
+                "evidence_revision": revision,
+                "client_id": str(milestone["client_id"]),
+                "freelancer_id": str(milestone["freelancer_id"]),
+                "file_attached": bool(file_key),
+                "review_url": milestone_review_url(str(milestone["project_id"]), str(milestone_id)),
+            },
+            idempotency_key=f"{milestone_id}:{revision}",
+        )
     return dict(row)
 
 
@@ -326,8 +339,49 @@ def persist_assessment(user: dict, milestone: dict, evidence: dict, result: dict
                    VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                 (report_id, finding["criterion_id"], finding["verdict"], finding["reasoning"], finding.get("quote"), Jsonb(finding.get("missing_or_contradictory", [])), finding.get("recommended_next_action") or finding.get("requested_revision")),
             )
-        _audit(connection, "assessment.completed" if trace["outcome"] == "ok" else "assessment.failed", user, project_id=milestone["project_id"], milestone_id=milestone["id"], details={"report_id": str(report_id), "evidence_revision": current_revision, "outcome": trace["outcome"], "model": trace["model"], "prompt_version": trace["prompt_version"], "duration_ms": trace["duration_ms"], "stale": is_stale})
-        enqueue_event(connection, "assessment.completed" if trace["outcome"] == "ok" else "assessment.failed", {"milestone_id": str(milestone["id"]), "evidence_revision": current_revision, "outcome": trace["outcome"], "all_met": bool(assessment.get("all_supported")), "blocker_count": len(assessment.get("blockers", [])), "stale": is_stale})
+        successful = trace["outcome"] == "ok" and result.get("assessment") is not None
+        _audit(connection, "assessment.completed" if successful else "assessment.failed", user, project_id=milestone["project_id"], milestone_id=milestone["id"], details={"report_id": str(report_id), "evidence_revision": current_revision, "outcome": trace["outcome"], "model": trace["model"], "prompt_version": trace["prompt_version"], "duration_ms": trace["duration_ms"], "stale": is_stale})
+        if successful:
+            verdicts = assessment.get("verdicts", [])
+            all_met = bool(assessment.get("all_supported"))
+            enqueue_event(
+                connection,
+                "assessment.completed",
+                {
+                    "project_id": str(milestone["project_id"]),
+                    "milestone_id": str(milestone["id"]),
+                    "assessment_id": str(report_id),
+                    "evidence_revision": current_revision,
+                    "overall_result": "all_met" if all_met else "needs_review",
+                    "all_met": all_met,
+                    "criterion_summary": [
+                        {"criterion_id": item["criterion_id"], "result": item["verdict"]}
+                        for item in verdicts
+                    ],
+                    "blocker_count": len(assessment.get("blockers", [])),
+                    "stale": is_stale,
+                    "advisory": True,
+                    "client_approval_required": True,
+                    "client_id": str(milestone["client_id"]),
+                    "review_url": milestone_review_url(str(milestone["project_id"]), str(milestone["id"])),
+                },
+                idempotency_key=str(report_id),
+            )
+        else:
+            enqueue_event(
+                connection,
+                "assessment.failed",
+                {
+                    "project_id": str(milestone["project_id"]),
+                    "milestone_id": str(milestone["id"]),
+                    "assessment_id": str(report_id),
+                    "evidence_revision": current_revision,
+                    "outcome": trace["outcome"],
+                    "stale": is_stale,
+                    "client_id": str(milestone["client_id"]),
+                },
+                idempotency_key=str(report_id),
+            )
     return {"report_id": str(report_id), "evidence_revision": current_revision, "stale": is_stale, "result": result}
 
 
@@ -371,7 +425,36 @@ def decide_milestone(user: dict, milestone_id: str, decision: str, note: str = "
         )
         row = cursor.fetchone()
         _audit(connection, f"milestone.{decision}", user, project_id=milestone["project_id"], milestone_id=milestone_id, details={"evidence_revision": milestone["evidence_revision"], "assessment_report_id": str(latest["id"]) if latest else None})
-        enqueue_event(connection, f"milestone.{decision}", {"milestone_id": str(milestone_id), "evidence_revision": milestone["evidence_revision"]})
+        event_data = {
+            "project_id": str(milestone["project_id"]),
+            "milestone_id": str(milestone_id),
+            "evidence_revision": milestone["evidence_revision"],
+            "assessment_id": str(latest["id"]) if latest else None,
+            "client_id": str(milestone["client_id"]),
+            "freelancer_id": str(milestone["freelancer_id"]),
+            "review_url": milestone_review_url(str(milestone["project_id"]), str(milestone_id)),
+        }
+        if decision == "revision_requested":
+            enqueue_event(
+                connection,
+                "revision.requested",
+                event_data,
+                idempotency_key=f"{milestone_id}:{milestone['evidence_revision']}",
+            )
+        elif decision == "approved":
+            enqueue_event(
+                connection,
+                "milestone.approved",
+                event_data,
+                idempotency_key=f"{milestone_id}:{milestone['evidence_revision']}",
+            )
+        else:
+            enqueue_event(
+                connection,
+                f"milestone.{decision}",
+                event_data,
+                idempotency_key=f"{milestone_id}:{milestone['evidence_revision']}:{row['id']}",
+            )
     return dict(row)
 
 

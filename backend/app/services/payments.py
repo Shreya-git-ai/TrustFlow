@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from app.db.repository import read_connection, transaction
 from app.services.workflow import DomainError, _audit
-from app.services.events import enqueue_event
+from app.services.events import enqueue_event, milestone_review_url
 
 
 def list_for_user(user: dict) -> list[dict]:
@@ -185,8 +185,9 @@ def finish_capture(payment_id: str, data: dict, error: str | None = None) -> dic
     status = data.get("status")
     with transaction() as connection:
         payment = connection.execute(
-            """SELECT pay.*, m.project_id FROM payments pay
+            """SELECT pay.*, m.project_id, p.client_id, p.freelancer_id FROM payments pay
                JOIN milestones m ON m.id = pay.milestone_id
+               JOIN projects p ON p.id = m.project_id
                WHERE pay.id = %s FOR UPDATE OF pay""",
             (payment_id,),
         ).fetchone()
@@ -214,7 +215,23 @@ def finish_capture(payment_id: str, data: dict, error: str | None = None) -> dic
         if completed:
             connection.execute("UPDATE milestones SET status = 'paid' WHERE id = %s AND approved_evidence_revision = evidence_revision", (payment["milestone_id"],))
             _audit(connection, "payment.captured", {"role": "system", "id": None}, project_id=payment["project_id"], milestone_id=payment["milestone_id"], payment_id=payment_id, details={"capture_id": capture_id, "status": status})
-            enqueue_event(connection, "payment.captured", {"capture_id": capture_id, "status": status, "amount": str(payment["amount"]), "currency": payment["currency"].strip()})
+            enqueue_event(
+                connection,
+                "payment.captured",
+                {
+                    "payment_id": str(payment["id"]),
+                    "project_id": str(payment["project_id"]),
+                    "milestone_id": str(payment["milestone_id"]),
+                    "capture_id": capture_id,
+                    "amount": str(payment["amount"]),
+                    "currency": payment["currency"].strip(),
+                    "status": "captured",
+                    "client_id": str(payment["client_id"]),
+                    "freelancer_id": str(payment["freelancer_id"]),
+                    "review_url": milestone_review_url(str(payment["project_id"]), str(payment["milestone_id"])),
+                },
+                idempotency_key=f"{payment['id']}:{capture_id}",
+            )
     return dict(row)
 
 
@@ -223,8 +240,9 @@ def find_capture_by_order(order_id: str, capture_id: str, amount: Decimal, curre
         return False
     with transaction() as connection:
         payment = connection.execute(
-            """SELECT pay.*, m.project_id FROM payments pay
+            """SELECT pay.*, m.project_id, p.client_id, p.freelancer_id FROM payments pay
                JOIN milestones m ON m.id = pay.milestone_id
+               JOIN projects p ON p.id = m.project_id
                WHERE pay.paypal_order_id = %s FOR UPDATE OF pay""",
             (order_id,),
         ).fetchone()
@@ -240,7 +258,24 @@ def find_capture_by_order(order_id: str, capture_id: str, amount: Decimal, curre
                VALUES (%s, %s, %s, 'payment.webhook_confirmed', 'paypal', %s)""",
             (payment["project_id"], payment["milestone_id"], payment["id"], Jsonb({"capture_id": capture_id, "order_id": order_id})),
         )
-        enqueue_event(connection, "payment.captured", {"capture_id": capture_id, "order_id": order_id, "amount": str(amount), "currency": currency})
+        enqueue_event(
+            connection,
+            "payment.captured",
+            {
+                "payment_id": str(payment["id"]),
+                "project_id": str(payment["project_id"]),
+                "milestone_id": str(payment["milestone_id"]),
+                "capture_id": capture_id,
+                "order_id": order_id,
+                "amount": str(amount),
+                "currency": currency,
+                "status": "captured",
+                "client_id": str(payment["client_id"]),
+                "freelancer_id": str(payment["freelancer_id"]),
+                "review_url": milestone_review_url(str(payment["project_id"]), str(payment["milestone_id"])),
+            },
+            idempotency_key=f"{payment['id']}:{capture_id}",
+        )
     return True
 
 
