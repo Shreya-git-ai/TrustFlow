@@ -81,9 +81,10 @@ def main():
     parser.add_argument("--case", action="append", help="run only the named case; may be repeated")
     args = parser.parse_args()
 
-    cases = [case for case in CASES if not args.case or case["name"] in args.case]
-    if args.case and {case["name"] for case in cases} != set(args.case):
+    cases_by_name = {case["name"]: case for case in CASES}
+    if args.case and any(name not in cases_by_name for name in args.case):
         raise SystemExit("Unknown case name")
+    cases = [cases_by_name[name] for name in args.case] if args.case else CASES
     if args.provider == "gemini":
         # Enforce the task's approved models even if the shell environment differs.
         os.environ["TRUSTFLOW_MODEL"] = "gemini-3.5-flash-lite"
@@ -96,6 +97,10 @@ def main():
         provider = get_provider(args.provider, case)
         raw_replies = []
         if args.raw_output:
+            if args.provider == "gemini":
+                # One underlying API attempt per selected eval run, including
+                # transient errors; fallback could exceed a caller's hard cap.
+                provider.fallback_model = None
             original_complete = provider.complete_json
             calls = 0
             def capture(system, user, timeout_s=30.0):
