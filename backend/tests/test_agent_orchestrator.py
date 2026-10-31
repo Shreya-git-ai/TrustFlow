@@ -95,6 +95,55 @@ class AgentOrchestratorTests(unittest.TestCase):
         self.assertIsNone(result.assessment)
         self.assertEqual(result.trace.outcome, "provider_error")
 
+    def test_attachment_and_link_claims_cannot_support_met(self):
+        cases = [
+            ("Attached file: report.pdf", "Attached file: report.pdf"),
+            ("See attached report", "See attached report"),
+            ("Attached file: source-code.zip", "source-code.zip"),
+            (
+                "Attached file shows 100% test coverage",
+                "Attached file shows 100% test coverage",
+            ),
+            ("https://example.test/coverage", "https://example.test/coverage"),
+            ("See link for 100% test coverage", "See link for 100% test coverage"),
+        ]
+        for evidence, quote in cases:
+            with self.subTest(evidence=evidence):
+                inp = AssessmentInput(
+                    milestone_id="1",
+                    evidence_revision=1,
+                    criteria=[CriterionInput(id=1, text="Unit tests pass")],
+                    evidence_text=evidence,
+                )
+                raw = json.dumps({"verdicts": [{
+                    "criterion_id": 1,
+                    "verdict": "met",
+                    "quote": quote,
+                    "reasoning": "The cited text supports passing tests.",
+                }]})
+                result = run_assessment(inp, FakeProvider([raw]))
+                self.assertEqual(result.trace.outcome, "ok")
+                self.assertEqual(result.assessment.verdicts[0].verdict.value, "unable_to_verify")
+                self.assertIn("attachment or link", result.assessment.verdicts[0].reasoning)
+                self.assertFalse(result.assessment.all_supported)
+
+    def test_substantive_evidence_remains_met_with_attachment_reference(self):
+        inp = AssessmentInput(
+            milestone_id="1",
+            evidence_revision=1,
+            criteria=[CriterionInput(id=1, text="Unit tests pass")],
+            evidence_text="All unit tests pass. See attached report.",
+        )
+        raw = json.dumps({"verdicts": [{
+            "criterion_id": 1,
+            "verdict": "met",
+            "quote": "All unit tests pass.",
+            "reasoning": "The evidence directly states that tests pass.",
+        }]})
+        result = run_assessment(inp, FakeProvider([raw]))
+        self.assertEqual(result.assessment.verdicts[0].verdict.value, "met")
+        self.assertTrue(result.assessment.all_supported)
+
 
 if __name__ == "__main__":
     unittest.main()
