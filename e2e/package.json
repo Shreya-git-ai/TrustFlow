@@ -1,0 +1,28 @@
+{
+  "name": "e2e",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:report": "playwright show-report",
+    "typecheck": "tsc --noEmit",
+    "db:check": "node --experimental-strip-types scripts/check-db.ts",
+    "db:seed": "node --experimental-strip-types scripts/seed.ts",
+    "db:verify": "node --experimental-strip-types scripts/verify.ts",
+    "db:cleanup": "node --experimental-strip-types scripts/cleanup.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "dotenv": "^18.0.9",
+    "pg": "^8.23.1",
+    "typescript": "^7.0.2"
+  }
+}
