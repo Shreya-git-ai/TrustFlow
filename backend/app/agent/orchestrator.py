@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from app.agent.models import ModelOutput
 from app.agent.prompts.assessor import PROMPT_VERSION, SYSTEM_PROMPT, build_user_prompt
 from app.agent.providers.base import ModelProvider
-from app.agent.verifier import verify
+from app.agent.verifier import downgrade_artifact_only_verdicts, verify
 from app.schemas.assessment import (
     Assessment, AssessmentInput, AssessmentResult, RunTrace, Verdict,
 )
@@ -55,6 +55,7 @@ def run_assessment(inp: AssessmentInput, provider: ModelProvider) -> AssessmentR
             problems = verify(inp, out)
             if problems:
                 raise ValueError("; ".join(problems))
+            out = downgrade_artifact_only_verdicts(inp, out)
         except (json.JSONDecodeError, ValidationError, ValueError) as e:
             last_error = str(e)[:300]
             user_prompt = build_user_prompt(inp) + f"\n\nYour previous reply was rejected: {last_error}\nFix it and reply with JSON only."

@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+.assessment_eval_raw.jsonl
 
 # Python
 __pycache__/

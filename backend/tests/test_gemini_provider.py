@@ -39,6 +39,16 @@ class GeminiProviderTests(unittest.TestCase):
         call.assert_called_once_with("primary-model", "system", "user", 30.0)
         self.assertEqual(provider.name, "gemini:primary-model")
 
+    def test_quota_error_does_not_use_fallback(self):
+        provider = self.make_provider()
+        quota_error = RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded")
+        with patch.object(provider, "_call", side_effect=quota_error) as call:
+            with self.assertRaisesRegex(RuntimeError, "RESOURCE_EXHAUSTED"):
+                provider.complete_json("system", "user")
+
+        call.assert_called_once_with("primary-model", "system", "user", 30.0)
+        self.assertEqual(provider.name, "gemini:primary-model")
+
 
 if __name__ == "__main__":
     unittest.main()
