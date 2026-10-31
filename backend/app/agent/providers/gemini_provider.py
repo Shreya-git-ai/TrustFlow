@@ -6,7 +6,7 @@ from google.genai import types
 
 load_dotenv()
 
-RETRY_CODES = {429, 500, 502, 503, 504}
+RETRY_CODES = {500, 502, 503, 504}
 
 
 def _is_transient(e: Exception) -> bool:
@@ -14,16 +14,21 @@ def _is_transient(e: Exception) -> bool:
     if isinstance(code, int):
         return code in RETRY_CODES
     text = str(e)
-    return any(s in text for s in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "timed out", "timeout"))
+    return any(s in text for s in ("500", "502", "503", "504", "UNAVAILABLE", "timed out", "timeout"))
 
 
 def _is_daily_quota(e: Exception) -> bool:
     text = str(e).lower()
-    return "quota" in text and any(marker in text for marker in ("per day", "daily", "requests/day", "limit: 0"))
+    return (
+        "429" in text
+        or "resource_exhausted" in text
+        or "quota" in text
+        or getattr(e, "code", None) == 429
+    )
 
 
 class GeminiProvider:
-    """Gemini provider with one bounded fallback attempt for transient errors."""
+    """Gemini provider with one bounded fallback for non-quota transient errors."""
 
     def __init__(self, model: str | None = None):
         api_key = os.getenv("GEMINI_API_KEY")
