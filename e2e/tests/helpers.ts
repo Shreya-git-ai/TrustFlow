@@ -1,4 +1,4 @@
-import { expect, type BrowserContext, type Page } from '@playwright/test'
+﻿import { expect, type BrowserContext, type Page } from '@playwright/test'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -20,7 +20,7 @@ export async function login(page: Page, role: 'client' | 'freelancer', password 
 export async function loginAccount(page: Page, email: string, password: string, role: 'client' | 'freelancer') {
   await page.goto('/')
   await page.getByLabel('Email', { exact: true }).fill(email)
-  await page.getByLabel('Password', { exact: true }).fill(password)
+  await page.locator('input[type="password"]').first().fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page.getByRole('heading', { name: role === 'client' ? /Good work starts with/ : /Keep your next milestone/ })).toBeVisible()
 }

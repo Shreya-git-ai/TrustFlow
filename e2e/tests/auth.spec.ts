@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+﻿import { test, expect } from '@playwright/test'
 import { apiUrl, credentials, login } from './helpers.js'
 
 test('client can log in, log out, and no longer use the session', async ({ page, context }) => {
@@ -23,7 +23,7 @@ test('freelancer can log in to the freelancer workspace', async ({ page, context
 test('invalid password is rejected without opening a session', async ({ page, context }) => {
   await page.goto('/')
   await page.getByLabel('Email', { exact: true }).fill(credentials.client.email)
-  await page.getByLabel('Password', { exact: true }).fill(`${credentials.client.password}-invalid`)
+  await page.locator('input[type="password"]').first().fill(`${credentials.client.password}-invalid`)
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page.getByRole('alert')).toContainText(/invalid|incorrect|sign in/i)
   expect((await context.request.get(apiUrl('/api/auth/me'))).status()).toBe(401)

@@ -1,4 +1,4 @@
-import { test, expect, type Browser } from '@playwright/test'
+﻿import { test, expect, type Browser } from '@playwright/test'
 import { apiMutation, apiUrl, credentials, login, loginAccount, recordUiProject, uniqueTitle } from './helpers.js'
 
 test('client and freelancer complete an evidence revision and approval workflow safely', async ({ browser }) => {
@@ -131,8 +131,12 @@ test('freelancer cannot make client-only approval decisions and cannot read anot
     await clientPage.getByLabel('Acceptance criteria').fill('A working account dashboard is delivered.\nAutomated tests are included.')
     await clientPage.getByLabel('Agreed amount').fill('20.00')
     await clientPage.getByRole('button', { name: 'Add milestone' }).click()
+    const clientMilestone = clientPage.locator('.milestone-list .milestone-row').filter({ hasText: milestoneTitle })
+    await expect(clientMilestone).toBeVisible()
     const details = await clientContext.request.get(apiUrl(`/api/projects/${project.id}`))
-    const milestone = (await details.json()).milestones[0]
+    expect(details.ok()).toBeTruthy()
+    const milestone = (await details.json()).milestones.find((item: { title: string }) => item.title === milestoneTitle)
+    expect(milestone?.id).toBeTruthy()
     const freelancerPage = await freelancerContext.newPage()
     await login(freelancerPage, 'freelancer')
     await acceptInvitation(freelancerPage, title)
@@ -149,7 +153,9 @@ test('freelancer cannot make client-only approval decisions and cannot read anot
     const assessment = await assessmentResponse
     expect(assessment.status()).toBe(200)
     const result = await assessment.json()
-    expect(result.result.assessment?.all_supported).toBe(false)
+    expect(result.result.trace.outcome).toBe('ok')
+    expect(result.result.assessment).not.toBeNull()
+    expect(result.result.assessment.all_supported).toBe(false)
     await expect(clientPage.getByRole('button', { name: 'Approve milestone' })).toBeDisabled()
     const unsafeApproval = await apiMutation(clientContext, `/api/milestones/${milestone.id}/decision`, { decision: 'approved', note: '' })
     expect(unsafeApproval.status()).toBe(409)
