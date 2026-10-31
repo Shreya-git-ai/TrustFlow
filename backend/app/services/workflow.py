@@ -30,11 +30,12 @@ def _project_for(connection, project_id: str, user: dict) -> dict:
     return row
 
 
-def _milestone_for(connection, milestone_id: str, user: dict) -> tuple[dict, dict]:
+def _milestone_for(connection, milestone_id: str, user: dict, *, for_update: bool = False) -> tuple[dict, dict]:
+    lock_clause = " FOR UPDATE OF m" if for_update else ""
     row = connection.execute(
-        """SELECT m.*, p.client_id, p.freelancer_id, p.membership_status
+        f"""SELECT m.*, p.client_id, p.freelancer_id, p.membership_status
            FROM milestones m JOIN projects p ON p.id = m.project_id
-           WHERE m.id = %s AND (p.client_id = %s OR p.freelancer_id = %s)""",
+           WHERE m.id = %s AND (p.client_id = %s OR p.freelancer_id = %s){lock_clause}""",
         (milestone_id, user["id"], user["id"]),
     ).fetchone()
     if row is None:
@@ -389,7 +390,7 @@ def decide_milestone(user: dict, milestone_id: str, decision: str, note: str = "
     if user["role"] != "client":
         raise DomainError(403, "Only the project client can make milestone decisions")
     with transaction() as connection:
-        milestone, _ = _milestone_for(connection, milestone_id, user)
+        milestone, _ = _milestone_for(connection, milestone_id, user, for_update=True)
         if str(milestone["client_id"]) != user["id"]:
             raise DomainError(403, "Only the project client can make milestone decisions")
         payment = connection.execute("SELECT status FROM payments WHERE milestone_id = %s FOR UPDATE", (milestone_id,)).fetchone()
@@ -405,6 +406,16 @@ def decide_milestone(user: dict, milestone_id: str, decision: str, note: str = "
                 raise DomainError(409, "All criteria must be met before this milestone can be approved")
             if payment and payment["status"] in {"capture_pending", "captured"}:
                 raise DomainError(409, "Payment capture has started; approval cannot be changed")
+            if milestone["status"] == "approved":
+                existing = connection.execute(
+                    """SELECT id, decision, evidence_revision, note, created_at FROM milestone_decisions
+                       WHERE milestone_id = %s AND actor_id = %s AND decision = 'approved'
+                         AND evidence_revision = %s
+                       ORDER BY created_at DESC LIMIT 1""",
+                    (milestone_id, user["id"], milestone["evidence_revision"]),
+                ).fetchone()
+                if existing is not None:
+                    return dict(existing)
             connection.execute("UPDATE milestones SET status = 'approved', approved_at = NOW(), approved_evidence_revision = %s, approved_assessment_id = %s WHERE id = %s", (milestone["evidence_revision"], latest["id"], milestone_id))
         elif decision == "revision_requested":
             if latest is None or latest["evidence_revision"] != milestone["evidence_revision"] or latest["outcome"] != "ok" or latest["is_stale"]:
