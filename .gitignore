@@ -26,3 +26,6 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 evals_raw.jsonl
+
+venv312/
+evals_raw*.jsonl
