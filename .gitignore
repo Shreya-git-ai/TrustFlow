@@ -25,3 +25,4 @@ dist/
 Thumbs.db
 .vscode/*
 !.vscode/extensions.json
+evals_raw.jsonl
