@@ -185,9 +185,13 @@ def finish_capture(payment_id: str, data: dict, error: str | None = None) -> dic
     status = data.get("status")
     with transaction() as connection:
         payment = connection.execute(
-            """SELECT pay.*, m.project_id, p.client_id, p.freelancer_id FROM payments pay
+            """SELECT pay.*, m.project_id, p.client_id, p.freelancer_id,
+                      client.email AS client_email, freelancer.email AS freelancer_email
+               FROM payments pay
                JOIN milestones m ON m.id = pay.milestone_id
                JOIN projects p ON p.id = m.project_id
+               JOIN users client ON client.id = p.client_id
+               JOIN users freelancer ON freelancer.id = p.freelancer_id
                WHERE pay.id = %s FOR UPDATE OF pay""",
             (payment_id,),
         ).fetchone()
@@ -228,6 +232,8 @@ def finish_capture(payment_id: str, data: dict, error: str | None = None) -> dic
                     "status": "captured",
                     "client_id": str(payment["client_id"]),
                     "freelancer_id": str(payment["freelancer_id"]),
+                    "client_email": payment["client_email"],
+                    "freelancer_email": payment["freelancer_email"],
                     "review_url": milestone_review_url(str(payment["project_id"]), str(payment["milestone_id"])),
                 },
                 idempotency_key=f"{payment['id']}:{capture_id}",
@@ -240,9 +246,13 @@ def find_capture_by_order(order_id: str, capture_id: str, amount: Decimal, curre
         return False
     with transaction() as connection:
         payment = connection.execute(
-            """SELECT pay.*, m.project_id, p.client_id, p.freelancer_id FROM payments pay
+            """SELECT pay.*, m.project_id, p.client_id, p.freelancer_id,
+                      client.email AS client_email, freelancer.email AS freelancer_email
+               FROM payments pay
                JOIN milestones m ON m.id = pay.milestone_id
                JOIN projects p ON p.id = m.project_id
+               JOIN users client ON client.id = p.client_id
+               JOIN users freelancer ON freelancer.id = p.freelancer_id
                WHERE pay.paypal_order_id = %s FOR UPDATE OF pay""",
             (order_id,),
         ).fetchone()
@@ -272,6 +282,8 @@ def find_capture_by_order(order_id: str, capture_id: str, amount: Decimal, curre
                 "status": "captured",
                 "client_id": str(payment["client_id"]),
                 "freelancer_id": str(payment["freelancer_id"]),
+                "client_email": payment["client_email"],
+                "freelancer_email": payment["freelancer_email"],
                 "review_url": milestone_review_url(str(payment["project_id"]), str(payment["milestone_id"])),
             },
             idempotency_key=f"{payment['id']}:{capture_id}",

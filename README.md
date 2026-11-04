@@ -80,7 +80,7 @@ Vite serves the app at `http://localhost:5173` and proxies `/api` to the local b
 - `SESSION_HASH_SALT` — generate a unique random value for production.
 - `TRUSTFLOW_FRONTEND_URL` — public frontend origin used for verification, invitation emails, and authenticated milestone links in Zapier events. Set this in deployed environments.
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_USE_SSL`, `SMTP_USE_STARTTLS` — optional SMTP delivery. When configured, signup requires email confirmation and project invitations also send an email. Configure these on the backend only; never commit SMTP credentials.
-- `ZAPIER_WEBHOOK_URL` — server-only Zapier Catch Hook URL (or same-owner combined Catch Hook URL). Workflow and verified refund events are transactionally placed in the PostgreSQL outbox and retried; events remain queued if this setting is absent.
+- `ZAPIER_WEBHOOK_URL` — server-only Zapier Catch Hook URL (or same-owner combined Catch Hook URL). Workflow and verified refund events are transactionally placed in the PostgreSQL outbox and retried; events remain queued if this setting is absent. Notification events include only their target email address so Zapier can send email actions; see [the Zapier guide](docs/REFUNDS_AND_ZAPIER.md) for setup and manual testing.
 - `TRUSTFLOW_AGENT_TOKEN` — bearer token required for the agent refund-proposal intake endpoint.
 - `ELASTIC_APM_SERVER_URL`, optional `ELASTIC_APM_SECRET_TOKEN` — optional monitoring.
 
