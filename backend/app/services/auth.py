@@ -103,6 +103,14 @@ def create_pending_user(email: str, name: str, password: str, role: str) -> tupl
     return public_user(row), verification_token
 
 
+def mark_verification_email_sent(token: str) -> None:
+    with transaction() as connection:
+        connection.execute(
+            "UPDATE email_verification_tokens SET sent_at = NOW() WHERE token_hash = %s",
+            (_hash_token(token),),
+        )
+
+
 def create_verification_token(email: str) -> tuple[str, str] | None:
     """Return (display name, raw token), enforcing a one-minute resend cooldown."""
     with transaction() as connection:
@@ -115,8 +123,8 @@ def create_verification_token(email: str) -> tuple[str, str] | None:
             return None
         recent = connection.execute(
             """SELECT 1 FROM email_verification_tokens
-               WHERE user_id = %s AND created_at > NOW() - INTERVAL '1 minute'
-               ORDER BY created_at DESC LIMIT 1""",
+               WHERE user_id = %s AND sent_at > NOW() - INTERVAL '1 minute'
+               ORDER BY sent_at DESC LIMIT 1""",
             (row["id"],),
         ).fetchone()
         if recent:
@@ -156,6 +164,75 @@ def verify_email_token(token: str) -> bool:
             return False
         connection.execute(
             "UPDATE email_verification_tokens SET consumed_at = NOW() WHERE user_id = %s AND consumed_at IS NULL",
+            (row["user_id"],),
+        )
+    return True
+
+
+def create_password_reset_token(email: str) -> tuple[str, str] | None:
+    """Create a short-lived reset token for a verified account, if one may be sent."""
+    with transaction() as connection:
+        user = connection.execute(
+            """SELECT id, display_name FROM users
+               WHERE lower(email) = lower(%s) AND email_verified = TRUE FOR UPDATE""",
+            (email,),
+        ).fetchone()
+        if user is None:
+            return None
+        recent = connection.execute(
+            """SELECT 1 FROM password_reset_tokens
+               WHERE user_id = %s AND sent_at > NOW() - INTERVAL '2 minutes'
+               ORDER BY sent_at DESC LIMIT 1""",
+            (user["id"],),
+        ).fetchone()
+        if recent:
+            return None
+        connection.execute(
+            """UPDATE password_reset_tokens SET consumed_at = COALESCE(consumed_at, NOW())
+               WHERE user_id = %s AND consumed_at IS NULL""",
+            (user["id"],),
+        )
+        connection.execute(
+            """DELETE FROM password_reset_tokens
+               WHERE user_id = %s AND (expires_at < NOW() - INTERVAL '7 days'
+                   OR consumed_at < NOW() - INTERVAL '7 days')""",
+            (user["id"],),
+        )
+        token = secrets.token_urlsafe(32)
+        connection.execute(
+            """INSERT INTO password_reset_tokens(token_hash, user_id, expires_at)
+               VALUES (%s, %s, %s)""",
+            (_hash_token(token), user["id"], datetime.now(timezone.utc) + timedelta(minutes=30)),
+        )
+        return user.get("display_name") or "", token
+
+
+def mark_password_reset_email_sent(token: str) -> None:
+    with transaction() as connection:
+        connection.execute(
+            "UPDATE password_reset_tokens SET sent_at = NOW() WHERE token_hash = %s",
+            (_hash_token(token),),
+        )
+
+
+def reset_password(token: str, password: str) -> bool:
+    token_hash = _hash_token(token)
+    with transaction() as connection:
+        row = connection.execute(
+            """SELECT user_id, expires_at, consumed_at FROM password_reset_tokens
+               WHERE token_hash = %s FOR UPDATE""",
+            (token_hash,),
+        ).fetchone()
+        if row is None or row["consumed_at"] is not None or row["expires_at"] <= datetime.now(timezone.utc):
+            return False
+        password_hash = hash_password(password)
+        connection.execute("UPDATE users SET password_hash = %s WHERE id = %s", (password_hash, row["user_id"]))
+        connection.execute(
+            "UPDATE password_reset_tokens SET consumed_at = NOW() WHERE user_id = %s AND consumed_at IS NULL",
+            (row["user_id"],),
+        )
+        connection.execute(
+            "UPDATE auth_sessions SET revoked_at = NOW() WHERE user_id = %s AND revoked_at IS NULL",
             (row["user_id"],),
         )
     return True

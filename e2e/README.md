@@ -51,6 +51,8 @@ npm run test:e2e:headed
 npm run test:e2e:report
 ```
 
+Run one area with `npm run test:e2e:auth`, `npm run test:e2e:workspace`, or `npm run test:e2e:workflows`.
+
 The suite uses one worker because tests share dedicated accounts and create related records. CI retries twice; traces are saved on the first retry, screenshots on failure, and the HTML report is written to `e2e/playwright-report/`. Test outputs and reports are ignored by Git. Tests use the UI for primary workflows; API helper calls share the browser context cookies and fetch a fresh CSRF token from `GET /api/auth/me` before each mutation.
 
 Assessment tests make real requests to the configured backend Gemini provider. A missing Gemini key/model causes the assessment workflow test to fail at the observed API response; this is reported as a blocker and is not treated as a pass. Assessment model verdicts can also vary, so use short, clear synthetic evidence.

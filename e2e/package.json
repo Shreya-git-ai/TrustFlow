@@ -6,6 +6,9 @@
   "scripts": {
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
+    "test:e2e:auth": "playwright test tests/auth.spec.ts",
+    "test:e2e:workspace": "playwright test tests/workspace.spec.ts",
+    "test:e2e:workflows": "playwright test tests/workflows.spec.ts",
     "test:e2e:report": "playwright show-report",
     "typecheck": "tsc --noEmit",
     "db:check": "node --experimental-strip-types scripts/check-db.ts",

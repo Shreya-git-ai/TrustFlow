@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEven
 import {
   acceptProject, assessMilestone, authorizePayment, capturePayment, createMilestone, evidenceFileUrl,
   createPaymentOrder, createProject, currentUser, decideMilestone, decideRefundProposal, getAudit, getMilestone, getPayments, getRefundProposals, getWorkspaceActivity,
-  getProject, getProjects, login, logout, reconcilePayment, resendVerification, signup, submitEvidence,
+  getProject, getProjects, login, logout, reconcilePayment, requestPasswordReset, resendVerification, resetPassword, signup, submitEvidence,
   updateAccount, updateMilestone, verifyEmail,
   type AssessmentResponse, type Milestone, type Project, type RefundProposal, type User, type WorkspaceActivity, type WorkspacePayment,
 } from './api/assessment'
@@ -10,7 +10,6 @@ import NotificationCenter from './components/audit/NotificationCenter'
 import NotificationPreferencesCard from './components/audit/NotificationPreferences'
 import { buildNotifications, defaultNotificationPreferences, savedNotificationPreferences, type NotificationPreferences, type WorkspaceNotification } from './components/audit/notificationData'
 import RecentActivity from './components/audit/RecentActivity'
-import AccountSnapshot from './components/dashboard/AccountSnapshot'
 import WorkspacePulse from './components/dashboard/WorkspacePulse'
 import PaymentsPage from './components/payments/PaymentsPage'
 import InsightsPage from './pages/InsightsPage'
@@ -58,6 +57,9 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [activeSection, setActiveSection] = useState<WorkspaceSection>('overview')
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return JSON.parse(window.localStorage.getItem('trustflow.sidebar.collapsed') || 'false') === true } catch { return false }
+  })
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [notificationsRead, setNotificationsRead] = useState<string[]>([])
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(defaultNotificationPreferences)
@@ -112,6 +114,19 @@ function App() {
       document.removeEventListener('mousedown', closeFloatingMenus)
       document.removeEventListener('keydown', closeOnEscape)
     }
+  }, [])
+
+  useEffect(() => {
+    function focusSearch(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k') return
+      const input = document.querySelector<HTMLInputElement>('.topbar-search input')
+      if (!input) return
+      event.preventDefault()
+      input.focus()
+      input.select()
+    }
+    document.addEventListener('keydown', focusSearch)
+    return () => document.removeEventListener('keydown', focusSearch)
   }, [])
   useEffect(() => {
     let active = true
@@ -186,9 +201,15 @@ function App() {
       return () => { active = false }
     }
     verifyEmail(token).then(() => {
-      if (active) setVerificationStatus('verified')
+      if (active) {
+        window.history.replaceState({}, '', '/verify-email')
+        setVerificationStatus('verified')
+      }
     }).catch(() => {
-      if (active) setVerificationStatus('error')
+      if (active) {
+        window.history.replaceState({}, '', '/verify-email')
+        setVerificationStatus('error')
+      }
     })
     return () => { active = false }
   }, [])
@@ -233,6 +254,14 @@ function App() {
       const selectedMilestone = item.milestone_id ? await getMilestone(item.milestone_id) : null
       setSettingsOpen(false); setActiveSection('overview')
       setProject(selected); setMilestone(selectedMilestone); setAudit(await getAudit(item.project_id))
+    })
+  }
+
+  function toggleSidebar() {
+    setSidebarCollapsed((collapsed) => {
+      const next = !collapsed
+      try { window.localStorage.setItem('trustflow.sidebar.collapsed', JSON.stringify(next)) } catch { /* collapse state remains for this session */ }
+      return next
     })
   }
 
@@ -326,9 +355,20 @@ function App() {
         setNotificationPreferences(savedNotificationPreferences(response.user.id))
         setProjects(await getProjects())
         void loadActivity()
-        setNotice('Email confirmation is off in local development. Configure SMTP to test the confirmation flow.')
+        setNotice('Account created. Email confirmation is disabled in this development environment.')
       } else {
-        const response = await login({ email: String(values.get('email')), password: String(values.get('password')) })
+        const email = String(values.get('email'))
+        let response: Awaited<ReturnType<typeof login>>
+        try {
+          response = await login({ email, password: String(values.get('password')) })
+        } catch (error) {
+          if (error instanceof Error && error.message === 'Confirm your email before signing in') {
+            setPendingVerificationEmail(email)
+            setPendingVerificationMessage('Confirm your email before signing in. You can request a fresh link below.')
+            return
+          }
+          throw error
+        }
         setUser(response.user)
         setNotificationsRead(savedNotificationIds(response.user.id))
         setNotificationPreferences(savedNotificationPreferences(response.user.id))
@@ -359,6 +399,8 @@ function App() {
   }
 
   if (window.location.pathname === '/verify-email') return <EmailVerificationPage status={verificationStatus || 'checking'} onResend={resendConfirmation} busy={busy} error={error} />
+  if (window.location.pathname === '/forgot-password') return <ForgotPasswordPage />
+  if (window.location.pathname === '/reset-password') return <ResetPasswordPage />
   if (pendingVerificationEmail) return <VerificationPending email={pendingVerificationEmail} message={pendingVerificationMessage} busy={busy} error={error} onResend={resendConfirmation} onBack={() => { setPendingVerificationEmail(''); setAuthMode('login'); setError('') }} />
   if (!['/', '/payment-return', '/payment-cancel'].includes(window.location.pathname)) return <main className="not-found-page"><section className="surface"><span className="eyebrow">404 · PAGE NOT FOUND</span><h1>We couldn’t find that page.</h1><p>Use your workspace navigation to return to a project.</p><a className="primary-button link-button" href="/">Go to TrustFlow</a></section></main>
   if (initializing) return <main className="app-loading" role="status" aria-live="polite"><span className="verification-spinner" aria-hidden="true"/><p>Loading TrustFlow…</p></main>
@@ -368,11 +410,11 @@ function App() {
   const notificationItems = buildNotifications(projects, user.role, notificationPreferences)
   const sectionTitle = activeSection === 'payments' ? 'Payments' : activeSection === 'insights' ? 'Insights' : activeSection === 'resources' ? 'Resources' : 'Overview'
 
-  return <div className="app-shell">
+  return <div className="app-shell" data-sidebar={sidebarCollapsed ? 'collapsed' : 'expanded'}>
     <aside className="sidebar">
       <div className="sidebar-brand-zone">
         <a className="brand sidebar-brand" href="/" aria-label="TrustFlow home"><span className="brand-mark">T</span><span>trustflow<span className="brand-dot">.</span></span></a>
-        <span className="sidebar-brand-caption">WORK, WITH A CLEAR PAPER TRAIL</span>
+        <button type="button" className="sidebar-collapse-toggle" aria-label={sidebarCollapsed ? 'Expand navigation' : 'Collapse navigation'} title={sidebarCollapsed ? 'Expand navigation' : 'Collapse navigation'} aria-expanded={!sidebarCollapsed} onClick={toggleSidebar}><span className="sidebar-collapse-chevron" aria-hidden="true">‹</span></button>
       </div>
       <div className="workspace-chip"><span className="workspace-avatar">{user.name.trim().slice(0, 1).toUpperCase()}</span><span className="workspace-chip-copy"><small>YOUR WORKSPACE</small><strong>{user.role === 'client' ? 'Client studio' : 'Freelancer desk'}</strong><em><i /> Personal workspace</em></span><span className="workspace-chevron">⌄</span></div>
       <p className="nav-caption">WORKSPACE</p>
@@ -420,10 +462,10 @@ function App() {
         {!project && !settingsOpen && activeSection === 'overview' && <Dashboard
           user={user} projects={projects} busy={busy} searchQuery={searchQuery} activity={activity}
           activityLoading={activityLoading} activityError={activityError} onOpen={openProject}
-          onOpenSettings={openSettings} onOpenInsights={() => navigateSection('insights')} onOpenActivity={openWorkspaceActivity}
+          onOpenInsights={() => navigateSection('insights')} onOpenActivity={openWorkspaceActivity}
           onOpenPayments={() => navigateSection('payments')}
           onAccept={(id) => void run(async () => { await acceptProject(id); await loadProjects(); await loadActivity(); setNotice('Project invitation accepted.') })}
-          onCreate={(data) => run(async () => { await createProject(data); await loadProjects(); await loadActivity(); setNotice('Project created and invitation sent to the registered freelancer.') })}
+          onCreate={(data) => run(async () => { await createProject(data); await loadProjects(); await loadActivity(); setNotice('Project created. The freelancer can accept the invitation from their workspace. Email delivery depends on SMTP or a Zapier email action.') })}
         />}
         {!project && !settingsOpen && activeSection === 'payments' && <PaymentsPage
           payments={payments} paymentsLoading={paymentsLoading} paymentsError={paymentsError}
@@ -493,7 +535,8 @@ function AuthScreen({ mode, setMode, onSubmit, busy, error }: {
         <button className="primary-button full-button" disabled={busy}>{busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}<span>→</span></button>
       </form>
       <p className="switch-auth">{mode === 'login' ? 'New to TrustFlow?' : 'Already have an account?'} <button onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}>{mode === 'login' ? 'Create account' : 'Sign in'}</button></p>
-      <p className="auth-limit">New accounts confirm their email when mail delivery is configured. Password recovery is not available yet.</p>
+      {mode === 'login' && <a className="auth-forgot-password" href="/forgot-password">Forgot password?</a>}
+      <p className="auth-limit">Email confirmation is enabled when delivery is configured. Password resets use a one-time email link.</p>
     </div></section>
   </main>
 }
@@ -539,9 +582,76 @@ function ResendVerificationForm({ initialEmail = '', busy, error, onResend }: {
     {message && <p className="resend-message" role="status">{message}</p>}
   </form>
 }
-function Dashboard({ user, projects, busy, searchQuery, activity, activityLoading, activityError, onOpen, onOpenSettings, onOpenInsights, onOpenActivity, onOpenPayments, onAccept, onCreate }: {
+
+function ForgotPasswordPage() {
+  const [busy, setBusy] = useState(false)
+  const [sent, setSent] = useState(false)
+  const [error, setError] = useState('')
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      const email = String(new FormData(event.currentTarget).get('email') || '').trim()
+      await requestPasswordReset(email)
+      setSent(true)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The request could not be completed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return <main className="verification-page auth-enter"><section className="verification-card surface">
+    <span className="verification-icon">↻</span><span className="eyebrow">ACCOUNT RECOVERY</span><h1>Reset your password</h1>
+    {sent ? <><p role="status">If a verified account uses that email and email delivery is configured, a reset link will arrive shortly. Check your spam folder too.</p><a className="primary-button link-button" href="/">Return to sign in <span>→</span></a></> : <>
+      <p>Enter the email address on your TrustFlow account. We’ll send a one-time reset link if the account is eligible and email delivery is configured.</p>
+      <form className="resend-form" onSubmit={(event) => void submit(event)}><label>Email<input name="email" type="email" autoComplete="email" required maxLength={254}/></label><button className="primary-button" disabled={busy}>{busy ? 'Sending…' : 'Send reset link'} <span>→</span></button>{error && <p className="inline-error" role="alert">{error}</p>}</form>
+      <a className="text-button verification-back" href="/">Back to sign in</a>
+    </>}
+  </section></main>
+}
+
+function ResetPasswordPage() {
+  const [busy, setBusy] = useState(false)
+  const [complete, setComplete] = useState(false)
+  const [error, setError] = useState('')
+  const token = window.location.hash.slice(1)
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const values = new FormData(event.currentTarget)
+    const password = String(values.get('password') || '')
+    if (password !== String(values.get('confirm_password') || '')) {
+      setError('The passwords do not match.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await resetPassword(token, password)
+      window.history.replaceState({}, '', '/reset-password')
+      setComplete(true)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The password could not be reset.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return <main className="verification-page auth-enter"><section className="verification-card surface">
+    <span className={`verification-icon ${complete ? 'verified' : token ? '' : 'invalid'}`}>{complete ? '✓' : token ? '↻' : '!'}</span>
+    <span className="eyebrow">ACCOUNT RECOVERY</span>
+    {complete ? <><h1>Password updated</h1><p>Your password has been changed and other sessions have been signed out.</p><a className="primary-button link-button" href="/">Sign in with your new password <span>→</span></a></> : !token ? <><h1>Reset link unavailable</h1><p>This link is missing or has already been removed from the address.</p><a className="primary-button link-button" href="/forgot-password">Request another link <span>→</span></a></> : <><h1>Choose a new password</h1><p>Use at least 12 characters. This link expires after 30 minutes and can only be used once.</p>
+      <form className="resend-form reset-password-form" onSubmit={(event) => void submit(event)}><PasswordField label="New password" name="password" autoComplete="new-password" required minLength={12} maxLength={128}/><PasswordField label="Confirm new password" name="confirm_password" autoComplete="new-password" required minLength={12} maxLength={128}/>{error && <p className="inline-error" role="alert">{error}</p>}<button className="primary-button" disabled={busy}>{busy ? 'Updating…' : 'Update password'} <span>→</span></button></form>
+    </>}
+  </section></main>
+}
+
+function Dashboard({ user, projects, busy, searchQuery, activity, activityLoading, activityError, onOpen, onOpenInsights, onOpenActivity, onOpenPayments, onAccept, onCreate }: {
   user: User; projects: Project[]; busy: boolean; searchQuery: string; activity: WorkspaceActivity[]
-  activityLoading: boolean; activityError: string; onOpen: (id: string) => void; onOpenSettings: () => void
+  activityLoading: boolean; activityError: string; onOpen: (id: string) => void
   onOpenInsights: () => void; onOpenActivity: (item: WorkspaceActivity) => void
   onOpenPayments: () => void; onAccept: (id: string) => void
   onCreate: (data: { title: string; description: string; currency: string; freelancer_email: string }) => Promise<boolean>
@@ -580,7 +690,6 @@ function Dashboard({ user, projects, busy, searchQuery, activity, activityLoadin
     </div>
     <div className="dashboard-lower-grid">
       <RecentActivity activity={activity} loading={activityLoading} error={activityError} onOpenActivity={onOpenActivity} onViewAll={onOpenInsights}/>
-      <AccountSnapshot user={user} projectCount={projects.length} onSettings={onOpenSettings}/>
     </div>
   </>
 }
@@ -607,10 +716,10 @@ function SettingsPage({ user, busy, notificationPreferences, onPreferenceChange,
   return <>
     <div className="page-heading"><div><span className="eyebrow">ACCOUNT / PREFERENCES</span><h1>Account settings</h1><p>Manage your identity and password. Your account role is fixed after signup.</p></div><span className="settings-heading-mark">⚙</span></div>
     <div className="settings-layout">
-      <section className="surface settings-card"><div className="section-head"><div><span className="eyebrow">PROFILE AND SECURITY</span><h2>Your account</h2><p>Keep your account details current and your credentials private.</p></div><span className="status-chip accepted">{user.role}</span></div><form className="stack-form" onSubmit={submit}><label>Name<input name="name" defaultValue={user.name} required maxLength={100}/><small>This name appears in your workspace and project collaboration views.</small></label><label>Email address<input value={user.email} readOnly/><small>{user.email_verified ? 'Your email address is confirmed.' : 'Your email address is not confirmed yet.'}</small></label><div className="settings-readonly-field"><span>ACCOUNT ROLE</span><strong>{user.role === 'client' ? 'Client' : 'Freelancer'}</strong><small>This is set when the account is created and cannot be changed here.</small></div><div className="settings-form-divider"><span>PASSWORD</span><i/></div><PasswordField label="Current password" name="current_password" autoComplete="current-password" required/><div className="settings-password-row"><PasswordField label="New password" name="new_password" autoComplete="new-password" minLength={12} hint="Leave blank to keep your current password."/><PasswordField label="Confirm new password" name="confirm_password" autoComplete="new-password" minLength={12}/></div>{passwordError && <p className="inline-error" role="alert">{passwordError}</p>}<button className="primary-button settings-save-button" disabled={busy}>{busy ? 'Saving…' : 'Save account changes'} <span>→</span></button></form><div className="settings-note"><strong>Password recovery is not configured</strong><p>Recovery email delivery is not set up in this MVP. Keep your password safe; account recovery will need a separate implementation.</p></div></section>
+      <section className="surface settings-card"><div className="section-head"><div><span className="eyebrow">PROFILE AND SECURITY</span><h2>Your account</h2><p>Keep your account details current and your credentials private.</p></div><span className="status-chip accepted">{user.role}</span></div><form className="stack-form" onSubmit={submit}><label>Name<input name="name" defaultValue={user.name} required maxLength={100}/><small>This name appears in your workspace and project collaboration views.</small></label><label>Email address<input value={user.email} readOnly/><small>{user.email_verified ? 'Your email address is confirmed.' : 'Your email address is not confirmed yet.'}</small></label><div className="settings-readonly-field"><span>ACCOUNT ROLE</span><strong>{user.role === 'client' ? 'Client' : 'Freelancer'}</strong><small>This is set when the account is created and cannot be changed here.</small></div><div className="settings-form-divider"><span>PASSWORD</span><i/></div><PasswordField label="Current password" name="current_password" autoComplete="current-password" required/><div className="settings-password-row"><PasswordField label="New password" name="new_password" autoComplete="new-password" minLength={12} hint="Leave blank to keep your current password."/><PasswordField label="Confirm new password" name="confirm_password" autoComplete="new-password" minLength={12}/></div>{passwordError && <p className="inline-error" role="alert">{passwordError}</p>}<button className="primary-button settings-save-button" disabled={busy}>{busy ? 'Saving…' : 'Save account changes'} <span>→</span></button></form><div className="settings-note"><strong>Forgot your password?</strong><p>Request a reset email from the sign-in page when email delivery is configured.</p><a href="/forgot-password">Open account recovery</a></div></section>
       <aside className="settings-side-stack">
         <section className="surface settings-identity-card"><div className="settings-cover-art"><span className="cover-orbit cover-orbit-a"/><span className="cover-orbit cover-orbit-b"/><span className="cover-monogram">{user.name.trim().slice(0, 1).toUpperCase()}</span><span className="cover-role-label">{user.role === 'client' ? 'CLIENT' : 'FREELANCER'}</span></div><div className="settings-identity-body"><span className="eyebrow">ACCOUNT IDENTITY</span><h2>{user.name}</h2><p>{user.email}</p><div className={`identity-verification ${user.email_verified ? 'verified' : 'pending'}`}><i/>{user.email_verified ? 'Email verified' : 'Email confirmation pending'}</div><div className="identity-facts"><div><span>ROLE</span><strong>{user.role === 'client' ? 'Client' : 'Freelancer'}</strong></div><div><span>WORKSPACE</span><strong>{user.role === 'client' ? 'Client studio' : 'Freelancer desk'}</strong></div></div></div></section>
-        <section className="surface settings-security-card"><div className="settings-side-head"><span className="settings-side-icon green">✓</span><div><span className="eyebrow">SECURITY STATUS</span><h3>{user.email_verified ? 'Email confirmed' : 'One step left'}</h3></div></div><p>{user.email_verified ? 'Your account email is confirmed. Keep using a unique password and avoid sharing access.' : 'Confirm your email address to complete the account verification step.'}</p><div className="security-check-row"><span><i className={user.email_verified ? 'ok' : 'waiting'}/>Email confirmation</span><strong>{user.email_verified ? 'Complete' : 'Pending'}</strong></div><div className="security-check-row"><span><i className="ok"/>Authenticated session</span><strong>Active</strong></div><div className="security-check-row"><span><i className="waiting"/>Password recovery</span><strong>Not configured</strong></div></section>
+        <section className="surface settings-security-card"><div className="settings-side-head"><span className="settings-side-icon green">✓</span><div><span className="eyebrow">SECURITY STATUS</span><h3>{user.email_verified ? 'Email confirmed' : 'One step left'}</h3></div></div><p>{user.email_verified ? 'Your account email is confirmed. Keep using a unique password and avoid sharing access.' : 'Confirm your email address to complete the account verification step.'}</p><div className="security-check-row"><span><i className={user.email_verified ? 'ok' : 'waiting'}/>Email confirmation</span><strong>{user.email_verified ? 'Complete' : 'Pending'}</strong></div><div className="security-check-row"><span><i className="ok"/>Authenticated session</span><strong>Active</strong></div><div className="security-check-row"><span><i className="ok"/>Password recovery</span><strong>Email link</strong></div></section>
         <NotificationPreferencesCard preferences={notificationPreferences} onChange={onPreferenceChange}/>
       </aside>
     </div>

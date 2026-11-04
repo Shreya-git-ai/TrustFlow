@@ -20,6 +20,12 @@ def event_recipient_email(connection, user_id: str) -> str | None:
     return row["email"] if row else None
 
 
+def event_recipient_name(connection, user_id: str) -> str | None:
+    """Load the intended notification recipient's display name for Zapier."""
+    row = connection.execute("SELECT display_name FROM users WHERE id = %s", (user_id,)).fetchone()
+    return row["display_name"] if row else None
+
+
 def enqueue_event(connection, event_name: str, data: dict, *, idempotency_key: str | None = None) -> None:
     """Persist an event in the caller's business transaction.
 
@@ -35,8 +41,7 @@ def enqueue_event(connection, event_name: str, data: dict, *, idempotency_key: s
     )
 
 
-def milestone_review_url(project_id: str, milestone_id: str) -> str | None:
-    """Return an authenticated SPA deep link, or None if no safe host is configured."""
+def _frontend_origin() -> tuple[str, str] | None:
     base_url = os.getenv("TRUSTFLOW_FRONTEND_URL", "").strip()
     if not base_url and os.getenv("TRUSTFLOW_ENV", "development").lower() != "production":
         base_url = "http://localhost:5173"
@@ -56,12 +61,28 @@ def milestone_review_url(project_id: str, milestone_id: str) -> str | None:
         or (parsed.scheme != "https" and not local_host)
     ):
         return None
+    return parsed.scheme, parsed.netloc
+
+
+def workspace_url() -> str | None:
+    """Return a safe frontend URL for signing in and opening workspace invitations."""
+    origin = _frontend_origin()
+    if origin is None:
+        return None
+    return urlunsplit((origin[0], origin[1], "/", "", ""))
+
+
+def milestone_review_url(project_id: str, milestone_id: str) -> str | None:
+    """Return an authenticated SPA deep link, or None if no safe host is configured."""
+    origin = _frontend_origin()
+    if origin is None:
+        return None
     query = urlencode({"project_id": project_id, "milestone_id": milestone_id})
-    return urlunsplit((parsed.scheme, parsed.netloc, "/", query, ""))
+    return urlunsplit((origin[0], origin[1], "/", query, ""))
 
 
 async def deliver_pending(limit: int = 10) -> int:
-    if not os.getenv("ZAPIER_WEBHOOK_URL"):
+    if not os.getenv("ZAPIER_WEBHOOK_URL", "").strip():
         return 0
     now = datetime.now(timezone.utc)
     with transaction() as connection:

@@ -54,6 +54,8 @@ services:
         value: ""
       - key: ZAPIER_WEBHOOK_URL
         sync: false
+      - key: ZAPIER_AUTH_WEBHOOK_URL
+        sync: false
       - key: TRUSTFLOW_AGENT_TOKEN
         sync: false
       - key: ELASTIC_APM_SERVER_URL
