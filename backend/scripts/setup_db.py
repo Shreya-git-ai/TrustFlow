@@ -1,4 +1,4 @@
-"""Apply the checked-in schema and idempotent MVP migration to DATABASE_URL."""
+"""Apply the checked-in schema and ordered, idempotent migrations to DATABASE_URL."""
 import sys
 from pathlib import Path
 

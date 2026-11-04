@@ -22,6 +22,7 @@ Assessment considers only the submitted text. Reference links are not opened. PD
 - `backend/app/db/` — shared PostgreSQL connection boundary, base schema, and additive migrations.
 - `backend/app/payments/paypal.py` — PayPal Sandbox HTTP client.
 - `backend/tests/` — unit and mocked API/provider tests.
+- `e2e/tests/` — Playwright browser tests for authentication, workspace navigation, collaboration, and payments.
 - `frontend/` — responsive React/TypeScript workspace.
 - `postman/TrustFlow.postman_collection.json` — API requests and starter assertions.
 - `render.yaml` — Render service blueprint; it describes deployment and does not deploy anything by itself.
@@ -41,7 +42,7 @@ python -m pip install -r backend/requirements.txt
 
 Create `backend/.env` from `backend/.env.example` only if it does not already exist. Add your PostgreSQL URL. To use assessments, set `GEMINI_API_KEY` and `TRUSTFLOW_MODEL`. For PayPal, set Sandbox `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`. Never commit `.env` or copy its values into the example file.
 
-Apply the base schema and additive MVP migration explicitly:
+Apply the base schema and all additive migrations explicitly:
 
 ```bash
 cd backend
@@ -54,7 +55,7 @@ Start the API from `backend/`:
 ../venv/bin/python -m app.main
 ```
 
-It listens on port 3000 by default. `GET http://localhost:3000/health` is public; readiness and product data require a session. The database migration is not applied automatically at app startup.
+It listens on port 3000 by default. `GET http://localhost:3000/health` is public; readiness and product data require a session. The database schema and migrations are not applied automatically at app startup.
 
 In a second terminal, start the frontend:
 
@@ -79,14 +80,15 @@ Vite serves the app at `http://localhost:5173` and proxies `/api` to the local b
 - `TRUSTFLOW_ENV` — set to `production` when deployed; this enables Secure session cookies.
 - `SESSION_HASH_SALT` — generate a unique random value for production.
 - `TRUSTFLOW_FRONTEND_URL` — public frontend origin used for verification, invitation emails, and authenticated milestone links in Zapier events. Set this in deployed environments.
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_USE_SSL`, `SMTP_USE_STARTTLS` — optional SMTP delivery. When configured, signup requires email confirmation and project invitations also send an email. Configure these on the backend only; never commit SMTP credentials.
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_USE_SSL`, `SMTP_USE_STARTTLS` — SMTP delivery for verification, password reset, and project invitations when Zapier is not configured. `ZAPIER_AUTH_WEBHOOK_URL` can handle verification and reset instead. Signup requires email confirmation when either auth email channel is configured. Set provider credentials on the backend only; never commit them.
 - `ZAPIER_WEBHOOK_URL` — server-only Zapier Catch Hook URL (or same-owner combined Catch Hook URL). Workflow and verified refund events are transactionally placed in the PostgreSQL outbox and retried; events remain queued if this setting is absent. Notification events include only their target email address so Zapier can send email actions; see [the Zapier guide](docs/REFUNDS_AND_ZAPIER.md) for setup and manual testing.
+- `ZAPIER_AUTH_WEBHOOK_URL` — optional dedicated Catch Hook for email verification and password reset when SMTP is unavailable. Keep it separate from workflow hooks because it carries short-lived account links.
 - `TRUSTFLOW_AGENT_TOKEN` — bearer token required for the agent refund-proposal intake endpoint.
 - `ELASTIC_APM_SERVER_URL`, optional `ELASTIC_APM_SECRET_TOKEN` — optional monitoring.
 
 ## Vercel services deployment
 
-The root `vercel.json` defines a FastAPI backend service and a Vite frontend service. In Vercel, set the project framework to **Services** and configure the backend environment variables in Project Settings. At minimum, set `DATABASE_URL`, `TRUSTFLOW_ENV=production`, a unique `SESSION_HASH_SALT`, and `TRUSTFLOW_FRONTEND_URL` to the public frontend origin; add Gemini, PayPal, SMTP, Zapier, and `TRUSTFLOW_AGENT_TOKEN` values as needed. Set `PAYPAL_RETURN_URL` and `PAYPAL_CANCEL_URL` to the Vercel production domain. Vercel deployment hostnames are included in backend origin checks automatically.
+The root `vercel.json` defines a FastAPI backend service and a Vite frontend service. In Vercel, set the project framework to **Services** and configure the backend environment variables in Project Settings. At minimum, set `DATABASE_URL`, `TRUSTFLOW_ENV=production`, a unique `SESSION_HASH_SALT`, and `TRUSTFLOW_FRONTEND_URL` to the public frontend origin; add Gemini, PayPal, SMTP, `ZAPIER_WEBHOOK_URL`, optional `ZAPIER_AUTH_WEBHOOK_URL`, and `TRUSTFLOW_AGENT_TOKEN` values as needed. Set `PAYPAL_RETURN_URL` and `PAYPAL_CANCEL_URL` to the Vercel production domain. Vercel deployment hostnames are included in backend origin checks automatically.
 
 Apply the database schema and migrations to the Vercel database before using the app. Evidence files up to 3 MB are stored in PostgreSQL so they remain available across serverless function instances. This increases database storage use; larger files should use an external object store.
 
@@ -95,6 +97,7 @@ The app prefers Argon2id through `argon2-cffi`. The existing offline development
 ## API overview
 
 - `POST /auth/signup`, `POST /auth/login`, `GET /auth/me`, `PATCH /auth/me`, `POST /auth/logout`
+- `POST /auth/verify-email`, `POST /auth/resend-verification`, `POST /auth/password-reset/request`, `POST /auth/password-reset/confirm`
 - `GET /projects`, `POST /projects`, `GET /projects/{id}`, `POST /projects/{id}/accept`, `GET /projects/{id}/audit`
 - `POST /projects/{id}/milestones`, `PUT /projects/{id}/milestones/{milestone_id}`
 - `GET /milestones/{id}`, `POST /milestones/{id}/evidence`, `GET /milestones/{id}/evidence/{evidence_id}/file`
@@ -129,11 +132,11 @@ npm run lint
 npm run build
 ```
 
-Tests mock Gemini and PayPal calls. They do not apply database migrations or contact PostgreSQL, Gemini, PayPal, or Zapier. The frontend does not yet have a browser automation suite.
+Backend tests mock Gemini and PayPal calls. They do not apply database migrations or contact PostgreSQL, Gemini, PayPal, or Zapier. Browser automation lives in `e2e/`; follow its README to configure dedicated test accounts and run the suite against a local or approved non-production environment. Browser workflows create application data, and optional tests contact Gemini and PayPal Sandbox.
 
 ## Known MVP limits
 
-- Password recovery is not implemented. Email verification and project invitation email delivery work when SMTP is configured. Without SMTP, local development signup remains immediate; production signup is disabled until SMTP is configured. The invitation still appears in the freelancer’s account when email is unavailable.
+- Email verification and password recovery use one-time links sent through backend SMTP. Local development signup remains immediate when SMTP is not configured; production signup is blocked until email delivery is configured. Zapier can send project and milestone workflow notifications; project invitations use Zapier when its Catch Hook is configured and SMTP otherwise.
 - Rows already present in the legacy `users` table have no password hashes. They cannot sign in through the new auth flow until a secure account-claim process is added.
 - Uploaded files (up to 3 MB) are stored privately in PostgreSQL and downloadable by project members, but are not extracted, scanned for malware, OCRed, or included in the Gemini prompt. Do not treat file-only evidence as verified.
 - Evidence links are recorded and checked for valid HTTP(S) shape, but never fetched.

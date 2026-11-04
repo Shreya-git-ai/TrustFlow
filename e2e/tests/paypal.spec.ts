@@ -1,4 +1,4 @@
-﻿import { test, expect } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 import { apiMutation, apiUrl, login, recordUiPaymentMilestone } from './helpers.js'
 
 test('PayPal Sandbox order, buyer approval, authorization, capture, and reconciliation', async ({ page, context }) => {

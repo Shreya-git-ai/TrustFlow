@@ -45,20 +45,28 @@ export function apiUrl(path: string) {
   return new URL(path, process.env.BASE_URL).toString()
 }
 
-export async function recordUiProject(projectId: string) {
+type UiManifest = { version: 1; projectIds: string[]; paymentMilestoneIds: string[] }
+
+function updateUiManifest(update: (manifest: UiManifest) => void) {
   const manifestPath = resolve(process.cwd(), '.e2e-ui-manifest.json')
-  const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : { version: 1, projectIds: [], paymentMilestoneIds: [] }
+  const manifest: UiManifest = existsSync(manifestPath)
+    ? JSON.parse(readFileSync(manifestPath, 'utf8'))
+    : { version: 1, projectIds: [], paymentMilestoneIds: [] }
   if (manifest.version !== 1 || !Array.isArray(manifest.projectIds) || !Array.isArray(manifest.paymentMilestoneIds)) throw new Error('E2E UI manifest is invalid.')
-  manifest.projectIds = [...new Set([...manifest.projectIds, projectId])]
+  update(manifest)
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
 }
 
+export async function recordUiProject(projectId: string) {
+  updateUiManifest((manifest) => {
+    manifest.projectIds = [...new Set([...manifest.projectIds, projectId])]
+  })
+}
+
 export async function recordUiPaymentMilestone(milestoneId: string) {
-  const manifestPath = resolve(process.cwd(), '.e2e-ui-manifest.json')
-  const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : { version: 1, projectIds: [], paymentMilestoneIds: [] }
-  if (manifest.version !== 1 || !Array.isArray(manifest.projectIds) || !Array.isArray(manifest.paymentMilestoneIds)) throw new Error('E2E UI manifest is invalid.')
-  manifest.paymentMilestoneIds = [...new Set([...manifest.paymentMilestoneIds, milestoneId])]
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
+  updateUiManifest((manifest) => {
+    manifest.paymentMilestoneIds = [...new Set([...manifest.paymentMilestoneIds, milestoneId])]
+  })
 }
 
 export function uniqueTitle(label: string) {

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import ipaddress
 import json
+import os
 from decimal import Decimal
 from urllib.parse import urlsplit
 
-import base64
-import binascii
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
@@ -14,7 +15,7 @@ from app.agent.orchestrator import run_assessment
 from app.agent.providers.gemini_provider import GeminiProvider
 from app.schemas.assessment import AssessmentInput, CriterionInput
 from app.security import get_current_user, require_csrf, set_session_cookie
-from app.services import storage, workflow
+from app.services import auth, storage, workflow
 from app.services.email import send_project_invitation_email
 from app.services.events import deliver_pending
 
@@ -95,13 +96,14 @@ def create_project(body: ProjectBody, background_tasks: BackgroundTasks, user: d
         raise HTTPException(422, "Currency must be a 3-letter uppercase code")
     result = _domain(workflow.create_project, user, body.title, body.description, body.currency, body.freelancer_email.strip().lower())
     background_tasks.add_task(deliver_pending)
-    background_tasks.add_task(
-        send_project_invitation_email,
-        body.freelancer_email.strip().lower(),
-        "",
-        user.get("name", ""),
-        body.title.strip(),
-    )
+    if not os.getenv("ZAPIER_WEBHOOK_URL", "").strip():
+        background_tasks.add_task(
+            send_project_invitation_email,
+            body.freelancer_email.strip().lower(),
+            "",
+            user.get("name", ""),
+            body.title.strip(),
+        )
     return result
 
 
@@ -126,7 +128,7 @@ def activity(limit: int = Query(default=30, ge=1, le=100), user: dict = Depends(
 
 
 @router.post("/projects/{project_id}/milestones", status_code=201)
-def add_milestone(project_id: str, body: MilestoneBody, user: dict = Depends(require_csrf)):
+def add_milestone(project_id: str, body: MilestoneBody, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
     due_at = None
     if body.due_at:
         from datetime import datetime
@@ -136,11 +138,13 @@ def add_milestone(project_id: str, body: MilestoneBody, user: dict = Depends(req
             raise HTTPException(422, "Deadline must be an ISO 8601 timestamp") from error
         if due_at.tzinfo is None:
             raise HTTPException(422, "Deadline must include a timezone")
-    return _domain(workflow.create_milestone, user, project_id, body.title, body.acceptance_criteria, body.amount, body.currency, due_at)
+    result = _domain(workflow.create_milestone, user, project_id, body.title, body.acceptance_criteria, body.amount, body.currency, due_at)
+    background_tasks.add_task(deliver_pending)
+    return result
 
 
 @router.put("/projects/{project_id}/milestones/{milestone_id}")
-def edit_milestone(project_id: str, milestone_id: str, body: MilestoneBody, user: dict = Depends(require_csrf)):
+def edit_milestone(project_id: str, milestone_id: str, body: MilestoneBody, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
     due_at = None
     if body.due_at:
         from datetime import datetime
@@ -150,7 +154,9 @@ def edit_milestone(project_id: str, milestone_id: str, body: MilestoneBody, user
             raise HTTPException(422, "Deadline must be an ISO 8601 timestamp") from error
         if due_at.tzinfo is None:
             raise HTTPException(422, "Deadline must include a timezone")
-    return _domain(workflow.update_milestone, user, project_id, milestone_id, body.title, body.acceptance_criteria, body.amount, body.currency, due_at)
+    result = _domain(workflow.update_milestone, user, project_id, milestone_id, body.title, body.acceptance_criteria, body.amount, body.currency, due_at)
+    background_tasks.add_task(deliver_pending)
+    return result
 
 
 @router.get("/milestones/{milestone_id}")
@@ -221,9 +227,8 @@ def milestone_decision(milestone_id: str, body: DecisionBody, background_tasks: 
 def account_settings(body: AccountBody, request: Request, response: Response, user: dict = Depends(require_csrf)):
     if not body.name.strip():
         raise HTTPException(422, "Name cannot be blank")
-    from app.services.auth import change_account
     try:
-        updated, token, csrf = change_account(user, body.name.strip(), body.current_password, body.new_password, request.cookies.get("trustflow_session"))
+        updated, token, csrf = auth.change_account(user, body.name.strip(), body.current_password, body.new_password, request.cookies.get("trustflow_session"))
     except ValueError as error:
         raise HTTPException(403, "Current password is incorrect") from error
     set_session_cookie(response, token)

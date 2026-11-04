@@ -30,17 +30,24 @@ async def send_event(
     *,
     event_id: str | None = None,
     occurred_at: datetime | None = None,
+    webhook_url: str | None = None,
 ) -> DeliveryResult:
-    """Send a small, stable event envelope to a configured Zapier Catch Hook.
+    """Send a small event envelope to a configured Zapier Catch Hook.
 
-    The caller persists the event before this function is called. Do not include
-    evidence text, credentials, or other sensitive values in event data.
+    Workflow events are persisted in the outbox before delivery. Auth email
+    links use a separate dedicated hook and are sent directly, never persisted
+    in the workflow outbox.
     """
-    webhook_url = os.getenv("ZAPIER_WEBHOOK_URL")
-    if not webhook_url:
-        return DeliveryResult(False, "ZAPIER_WEBHOOK_URL is not configured")
+    target_url = (webhook_url or os.getenv("ZAPIER_WEBHOOK_URL", "")).strip()
+    if not target_url:
+        return DeliveryResult(False, "A Zapier Catch Hook URL is not configured")
 
+    # Keep the original `data` object for existing consumers, while also
+    # exposing its fields at the top level for Zapier's field picker/Copilot.
+    # The envelope keys stay authoritative if a future event uses a colliding
+    # field name.
     payload = {
+        **data,
         "event": event,
         "event_type": event,
         "event_id": event_id,
@@ -51,7 +58,7 @@ async def send_event(
     for attempt in range(1, 4):
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.post(webhook_url, json=payload)
+                response = await client.post(target_url, json=payload)
             if response.is_success:
                 log_event("info", "integration.zapier.delivered", eventName=event)
                 return DeliveryResult(True)

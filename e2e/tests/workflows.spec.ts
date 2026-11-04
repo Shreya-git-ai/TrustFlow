@@ -1,4 +1,4 @@
-﻿import { test, expect, type Browser } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 import { apiMutation, apiUrl, credentials, login, loginAccount, recordUiProject, uniqueTitle } from './helpers.js'
 
 test('client and freelancer complete an evidence revision and approval workflow safely', async ({ browser }) => {
@@ -45,8 +45,16 @@ test('client and freelancer complete an evidence revision and approval workflow 
     const empty = await apiMutation(freelancerContext, `/api/milestones/${milestone.id}/evidence`, { description: '', links: [] })
     expect(empty.status()).toBe(422)
     await freelancerPage.getByLabel('What did you deliver?').fill('The delivered feature is available at the preview. Setup notes are included in the handoff document.')
+    await freelancerPage.getByLabel('Reference links').fill('https://example.com/test-evidence')
+    await freelancerPage.getByLabel('Attach a file').setInputFiles({
+      name: 'e2e-evidence.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('Synthetic evidence attachment for the E2E workflow.'),
+    })
     await freelancerPage.getByRole('button', { name: 'Submit evidence revision' }).click()
     await expect(freelancerPage.getByText('R1', { exact: true })).toBeVisible()
+    await expect(freelancerPage.getByText('e2e-evidence.txt')).toBeVisible()
+    await expect(freelancerPage.getByText('https://example.com/test-evidence')).toBeVisible()
 
     await clientPage.reload()
     await openProject(clientPage, title)

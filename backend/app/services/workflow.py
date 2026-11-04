@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -10,7 +11,7 @@ from uuid import uuid4
 from psycopg.types.json import Jsonb
 
 from app.db.repository import read_connection, transaction
-from app.services.events import enqueue_event, event_recipient_email, milestone_review_url
+from app.services.events import enqueue_event, event_recipient_email, event_recipient_name, milestone_review_url, workspace_url
 
 
 class DomainError(Exception):
@@ -84,7 +85,7 @@ def create_project(user: dict, title: str, description: str, currency: str, free
         raise DomainError(403, "Only clients can create projects")
     with transaction() as connection:
         freelancer = connection.execute(
-            "SELECT id FROM users WHERE lower(email) = lower(%s) AND role = 'freelancer'",
+            "SELECT id, email, display_name FROM users WHERE lower(email) = lower(%s) AND role = 'freelancer'",
             (freelancer_email,),
         ).fetchone()
         if freelancer is None:
@@ -100,6 +101,20 @@ def create_project(user: dict, title: str, description: str, currency: str, free
         connection.execute("UPDATE projects SET membership_status = 'invited', membership_accepted_at = NULL WHERE id = %s", (row["id"],))
         _audit(connection, "project.created", user, project_id=row["id"], details={"title": title.strip(), "invited_freelancer": freelancer_email})
         enqueue_event(connection, "project.created", {"project_id": str(row["id"]), "title": title.strip()})
+        enqueue_event(
+            connection,
+            "project.invited",
+            {
+                "project_id": str(row["id"]),
+                "project_title": title.strip(),
+                "project_name": title.strip(),
+                "client_id": str(user["id"]),
+                "display_name": freelancer["display_name"],
+                "recipient_email": freelancer["email"] if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "workspace_url": workspace_url(),
+            },
+            idempotency_key=str(row["id"]),
+        )
     return dict(row)
 
 
@@ -152,6 +167,25 @@ def create_milestone(user: dict, project_id: str, title: str, criteria: list[str
             (project_id, title.strip(), Jsonb(clean_criteria), amount, currency, due_at),
         ).fetchone()
         _audit(connection, "milestone.created", user, project_id=project_id, milestone_id=row["id"], details={"criteria_count": len(clean_criteria), "amount": str(amount), "currency": currency})
+        enqueue_event(
+            connection,
+            "milestone.created",
+            {
+                "project_id": str(project_id),
+                "milestone_id": str(row["id"]),
+                "milestone_title": title.strip(),
+                "project_title": project["title"],
+                "project_name": project["title"],
+                "client_id": str(project["client_id"]),
+                "freelancer_id": str(project["freelancer_id"]),
+                "recipient_email": event_recipient_email(connection, str(project["freelancer_id"]))
+                if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "display_name": event_recipient_name(connection, str(project["freelancer_id"]))
+                if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "review_url": milestone_review_url(str(project_id), str(row["id"])),
+            },
+            idempotency_key=str(row["id"]),
+        )
     return dict(row)
 
 
@@ -180,7 +214,25 @@ def update_milestone(user: dict, project_id: str, milestone_id: str, title: str,
             (title.strip(), Jsonb(clean_criteria), amount, currency, due_at, milestone_id, project_id),
         ).fetchone()
         _audit(connection, "milestone.updated", user, project_id=project_id, milestone_id=milestone_id, details={"criteria_count": len(clean_criteria), "amount": str(amount), "currency": currency})
-        enqueue_event(connection, "milestone.updated", {"project_id": str(project_id), "milestone_id": str(milestone_id)})
+        enqueue_event(
+            connection,
+            "milestone.updated",
+            {
+                "project_id": str(project_id),
+                "milestone_id": str(milestone_id),
+                "milestone_title": title.strip(),
+                "project_title": project["title"],
+                "project_name": project["title"],
+                "client_id": str(project["client_id"]),
+                "freelancer_id": str(project["freelancer_id"]),
+                "recipient_email": event_recipient_email(connection, str(project["freelancer_id"]))
+                if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "display_name": event_recipient_name(connection, str(project["freelancer_id"]))
+                if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "review_url": milestone_review_url(str(project_id), str(milestone_id)),
+            },
+            idempotency_key=str(uuid4()),
+        )
     return dict(row)
 
 

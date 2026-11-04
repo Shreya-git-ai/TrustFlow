@@ -81,6 +81,12 @@ export async function signup(payload: { name: string; email: string; password: s
 }
 export async function verifyEmail(token: string) { return request<{ verified: boolean }>('/auth/verify-email', { method: 'POST', body: JSON.stringify({ token }) }) }
 export async function resendVerification(email: string) { return request<{ message: string }>('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email }) }) }
+export async function requestPasswordReset(email: string) {
+  return request<{ message: string }>('/auth/password-reset/request', { method: 'POST', body: JSON.stringify({ email }) })
+}
+export async function resetPassword(token: string, password: string) {
+  return request<{ success: boolean }>('/auth/password-reset/confirm', { method: 'POST', body: JSON.stringify({ token, password }) })
+}
 export async function login(payload: { email: string; password: string }) {
   return request<{ user: User; csrf_token: string }>('/auth/login', { method: 'POST', body: JSON.stringify(payload) })
 }

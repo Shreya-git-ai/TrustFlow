@@ -6,9 +6,10 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from app.observability import log_event
 from app.security import SESSION_COOKIE, allowed_origins, get_current_user, require_csrf, set_session_cookie
 from app.services import auth
-from app.services.email import email_delivery_configured, send_verification_email
+from app.services.email import email_delivery_configured, send_password_reset_email, send_verification_email
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -34,6 +35,11 @@ class VerifyEmailBody(BaseModel):
     token: str = Field(min_length=32, max_length=128)
 
 
+class PasswordResetBody(BaseModel):
+    token: str = Field(min_length=32, max_length=128)
+    password: str = Field(min_length=12, max_length=128)
+
+
 def _normalize_email(value: str) -> str:
     email = value.strip().lower()
     if not EMAIL_RE.fullmatch(email):
@@ -49,6 +55,10 @@ def _check_origin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Origin is not allowed")
 
 
+def _auth_email_delivery_configured() -> bool:
+    return email_delivery_configured() or bool(os.getenv("ZAPIER_AUTH_WEBHOOK_URL", "").strip())
+
+
 @router.post("/signup", status_code=201)
 def signup(body: SignupBody, request: Request, response: Response) -> dict:
     _check_origin(request)
@@ -57,7 +67,7 @@ def signup(body: SignupBody, request: Request, response: Response) -> dict:
     if not body.name.strip():
         raise HTTPException(status_code=422, detail="Name cannot be blank")
     email = _normalize_email(body.email)
-    if email_delivery_configured():
+    if _auth_email_delivery_configured():
         try:
             user, verification_token = auth.create_pending_user(email, body.name.strip(), body.password, body.role)
         except Exception as error:
@@ -98,14 +108,37 @@ def verify_email(body: VerifyEmailBody, request: Request) -> dict:
 def resend_verification(body: EmailBody, request: Request) -> dict:
     _check_origin(request)
     email = _normalize_email(body.email)
-    token_data = auth.create_verification_token(email) if email_delivery_configured() else None
+    token_data = auth.create_verification_token(email) if _auth_email_delivery_configured() else None
     if token_data:
         name, token = token_data
         try:
             send_verification_email(email, name, token)
-        except Exception:
-            pass
+        except Exception as error:
+            log_event("warning", "email.verification.resend_failed", error=type(error).__name__)
     return {"message": "If that address has an unverified account, a confirmation email will be sent."}
+
+
+@router.post("/password-reset/request", status_code=202)
+def request_password_reset(body: EmailBody, request: Request) -> dict:
+    _check_origin(request)
+    email = _normalize_email(body.email)
+    if _auth_email_delivery_configured():
+        token_data = auth.create_password_reset_token(email)
+        if token_data:
+            name, token = token_data
+            try:
+                send_password_reset_email(email, name, token)
+            except Exception as error:
+                log_event("warning", "email.password_reset.failed", error=type(error).__name__)
+    return {"message": "If a verified account uses that address, a password reset link will be sent."}
+
+
+@router.post("/password-reset/confirm")
+def confirm_password_reset(body: PasswordResetBody, request: Request) -> dict:
+    _check_origin(request)
+    if not auth.reset_password(body.token, body.password):
+        raise HTTPException(status_code=400, detail="This password reset link is invalid, expired, or already used")
+    return {"success": True}
 
 
 @router.post("/login")

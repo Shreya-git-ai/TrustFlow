@@ -38,7 +38,7 @@ TrustFlow is a React/Vite frontend backed by one FastAPI application and Postgre
 
 ## Database setup
 
-`backend/app/db/schema.sql` creates or preserves the original core tables. `backend/app/db/migrations/001_mvp.sql` adds authentication/session, membership, revision, assessment, decision, payment, webhook, and outbox state. Run `python scripts/setup_db.py` from `backend/` after configuring `DATABASE_URL`. App startup does not apply schema changes. The setup command is idempotent for the checked-in schema and migration.
+`backend/app/db/schema.sql` creates or preserves the original core tables. The ordered migrations add authentication/session, membership, revision, assessment, decision, payment, webhook, outbox, refund, and email-verification state. Run `python scripts/setup_db.py` from `backend/` after configuring `DATABASE_URL`. App startup does not apply schema changes. The setup command is idempotent for the checked-in schema and migrations.
 
 The existing outbox schema already has the fields needed for event IDs (derived from its unique dedupe key), event time (`created_at`), attempt tracking, delivery state, retry time, lock expiry, sanitized error, and delivery time. No new migration is required for workflow event expansion.
 
