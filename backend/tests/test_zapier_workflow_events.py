@@ -34,6 +34,12 @@ class _WorkflowConnection:
 
     def execute(self, sql, params=()):
         self.executed.append((sql, params))
+        if "SELECT email FROM users WHERE id = %s" in sql:
+            emails = {
+                "client-1": "client@example.test",
+                "freelancer-1": "freelancer@example.test",
+            }
+            return _Cursor({"email": emails.get(params[0])})
         if "INSERT INTO evidence" in sql:
             return _Cursor({
                 "id": "evidence-1",
@@ -197,6 +203,8 @@ class ZapierWorkflowEventTests(unittest.TestCase):
         self.assertEqual(data["evidence_revision"], 3)
         self.assertEqual(data["client_id"], "client-1")
         self.assertEqual(data["freelancer_id"], "freelancer-1")
+        self.assertEqual(data["recipient_email"], "client@example.test")
+        self.assertNotIn("freelancer_email", data)
         self.assertIn("project_id=project-1", data["review_url"])
         self.assertNotIn("evidence_text", data)
         self.assertNotIn("secret evidence text", repr(data))
@@ -238,6 +246,7 @@ class ZapierWorkflowEventTests(unittest.TestCase):
         self.assertTrue(data["advisory"])
         self.assertTrue(data["client_approval_required"])
         self.assertEqual(data["client_id"], "client-1")
+        self.assertEqual(data["recipient_email"], "client@example.test")
         self.assertNotIn("secret evidence text", repr(data))
         self.assertNotIn("secret evidence text", repr(kwargs))
 
@@ -263,6 +272,7 @@ class ZapierWorkflowEventTests(unittest.TestCase):
         self.assertEqual(args[1], "revision.requested")
         self.assertEqual(args[2]["freelancer_id"], "freelancer-1")
         self.assertEqual(args[2]["client_id"], "client-1")
+        self.assertEqual(args[2]["recipient_email"], "freelancer@example.test")
         self.assertEqual(args[2]["evidence_revision"], 3)
         self.assertNotIn("private feedback", repr(args[2]))
         self.assertEqual(kwargs["idempotency_key"], "milestone-1:3")
@@ -274,6 +284,7 @@ class ZapierWorkflowEventTests(unittest.TestCase):
         args, kwargs = events_seen[0]
         self.assertEqual(args[1], "milestone.approved")
         self.assertEqual(args[2]["assessment_id"], "report-1")
+        self.assertEqual(args[2]["recipient_email"], "freelancer@example.test")
         self.assertEqual(kwargs["idempotency_key"], "milestone-1:3")
 
     def test_invalid_approval_and_freelancer_cannot_emit_approval_event(self):
@@ -295,6 +306,8 @@ class ZapierWorkflowEventTests(unittest.TestCase):
             "project_id": self.project_id,
             "client_id": "client-1",
             "freelancer_id": "freelancer-1",
+            "client_email": "client@example.test",
+            "freelancer_email": "freelancer@example.test",
             "amount": Decimal("25.00"),
             "currency": "USD ",
             "status": "capture_pending",
@@ -315,6 +328,8 @@ class ZapierWorkflowEventTests(unittest.TestCase):
         self.assertEqual(args[2]["status"], "captured")
         self.assertEqual(args[2]["amount"], "25.00")
         self.assertEqual(args[2]["currency"], "USD")
+        self.assertEqual(args[2]["client_email"], "client@example.test")
+        self.assertEqual(args[2]["freelancer_email"], "freelancer@example.test")
         self.assertNotIn("access_token", repr(args[2]).lower())
         self.assertNotIn("secret", repr(args[2]).lower())
         self.assertEqual(kwargs["idempotency_key"], "payment-1:capture-1")
@@ -323,6 +338,7 @@ class ZapierWorkflowEventTests(unittest.TestCase):
         payment = {
             "id": "payment-1", "milestone_id": self.milestone_id, "project_id": self.project_id,
             "client_id": "client-1", "freelancer_id": "freelancer-1",
+            "client_email": "client@example.test", "freelancer_email": "freelancer@example.test",
             "amount": Decimal("25.00"), "currency": "USD ", "status": "capture_pending",
         }
         connection = _PaymentConnection(payment)

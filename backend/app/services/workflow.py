@@ -10,7 +10,7 @@ from uuid import uuid4
 from psycopg.types.json import Jsonb
 
 from app.db.repository import read_connection, transaction
-from app.services.events import enqueue_event, milestone_review_url
+from app.services.events import enqueue_event, event_recipient_email, milestone_review_url
 
 
 class DomainError(Exception):
@@ -220,6 +220,7 @@ def add_evidence(user: dict, milestone_id: str, description: str, links: list[st
                 "evidence_revision": revision,
                 "client_id": str(milestone["client_id"]),
                 "freelancer_id": str(milestone["freelancer_id"]),
+                "recipient_email": event_recipient_email(connection, str(milestone["client_id"])),
                 "file_attached": bool(file_key),
                 "review_url": milestone_review_url(str(milestone["project_id"]), str(milestone_id)),
             },
@@ -364,6 +365,7 @@ def persist_assessment(user: dict, milestone: dict, evidence: dict, result: dict
                     "advisory": True,
                     "client_approval_required": True,
                     "client_id": str(milestone["client_id"]),
+                    "recipient_email": event_recipient_email(connection, str(milestone["client_id"])),
                     "review_url": milestone_review_url(str(milestone["project_id"]), str(milestone["id"])),
                 },
                 idempotency_key=str(report_id),
@@ -446,6 +448,7 @@ def decide_milestone(user: dict, milestone_id: str, decision: str, note: str = "
             "review_url": milestone_review_url(str(milestone["project_id"]), str(milestone_id)),
         }
         if decision == "revision_requested":
+            event_data["recipient_email"] = event_recipient_email(connection, str(milestone["freelancer_id"]))
             enqueue_event(
                 connection,
                 "revision.requested",
@@ -453,6 +456,7 @@ def decide_milestone(user: dict, milestone_id: str, decision: str, note: str = "
                 idempotency_key=f"{milestone_id}:{milestone['evidence_revision']}",
             )
         elif decision == "approved":
+            event_data["recipient_email"] = event_recipient_email(connection, str(milestone["freelancer_id"]))
             enqueue_event(
                 connection,
                 "milestone.approved",

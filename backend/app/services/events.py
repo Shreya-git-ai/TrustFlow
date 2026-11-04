@@ -14,6 +14,12 @@ from app.integrations.zapier import send_event
 from app.observability import log_event
 
 
+def event_recipient_email(connection, user_id: str) -> str | None:
+    """Load only the intended notification recipient's email for Zapier delivery."""
+    row = connection.execute("SELECT email FROM users WHERE id = %s", (user_id,)).fetchone()
+    return row["email"] if row else None
+
+
 def enqueue_event(connection, event_name: str, data: dict, *, idempotency_key: str | None = None) -> None:
     """Persist an event in the caller's business transaction.
 
