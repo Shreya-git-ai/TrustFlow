@@ -492,7 +492,7 @@ function App() {
           onRefundReject={(proposal) => reviewRefundProposal(proposal, 'reject')}
         />}
         {!project && !settingsOpen && activeSection === 'insights' && <InsightsPage projects={projects} role={user.role} activity={activity} loading={activityLoading} error={activityError} onRefresh={() => void loadActivity()} onOpenProject={(id) => void openProject(id)} onOpenActivity={(item) => void openWorkspaceActivity(item)}/>}
-        {!project && !settingsOpen && activeSection === 'resources' && <ResourcesPage role={user.role} projects={projects} onOverview={() => navigateSection('overview')} onPayments={() => navigateSection('payments')} onOpenProject={(id) => void openProject(id)}/>}
+        {!project && !settingsOpen && activeSection === 'resources' && <ResourcesPage role={user.role} projects={projects} onOverview={() => navigateSection('overview')} onPayments={() => navigateSection('payments')} onOpenProject={(id) => void openProject(id)} onTeamDirectory={() => navigateSection('team')}/>}
         {!project && !settingsOpen && activeSection === 'team' && <TeamDirectoryPage projects={projects} role={user.role} onOpenProject={(id) => void openProject(id)}/>}
         {project && milestone && <MilestonePage
           milestone={milestone} project={project} user={user} busy={busy} audit={audit}
@@ -718,29 +718,45 @@ function Dashboard({ user, projects, busy, searchQuery, activity, activityLoadin
     pipelineCursor += pipelineTotal ? item.count / pipelineTotal * 100 : 0
     return `${item.color} ${start}% ${pipelineCursor}%`
   }).join(', ')
-  const teamWorkload = new Map<string, { active: number; invitations: number; reviews: number; revisions: number; payments: number }>()
-  for (const item of projects) {
-    const collaborator = (user.role === 'client' ? item.freelancer_name : item.client_name)?.trim() || 'Project collaborator'
-    const workload = teamWorkload.get(collaborator) || { active: 0, invitations: 0, reviews: 0, revisions: 0, payments: 0 }
-    if (item.membership_status === 'accepted') workload.active += 1
-    if (item.membership_status === 'invited') workload.invitations += 1
-    workload.reviews += Math.max(item.submitted_count || 0, item.decision_due_count || 0)
-    workload.revisions += item.revision_count || 0
-    workload.payments += item.active_payment_count || 0
-    teamWorkload.set(collaborator, workload)
+  const today = new Date()
+  const activityMonths = Array.from({ length: 12 }, (_, index) => {
+    const date = new Date(today.getFullYear(), today.getMonth() - 11 + index, 1)
+    return { key: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`, label: date.toLocaleDateString(undefined, { month: 'short' }) }
+  })
+  const counterpartRole = user.role === 'client' ? 'freelancer' : 'client'
+  const teamActivity = new Map<string, { name: string; months: number[] }>()
+  const getTeamMember = (name: string) => {
+    const key = name.trim().toLocaleLowerCase()
+    let member = teamActivity.get(key)
+    if (!member) {
+      member = { name: name.trim(), months: Array(12).fill(0) }
+      teamActivity.set(key, member)
+    }
+    return member
   }
-  const teamRows = [...teamWorkload.entries()]
-    .map(([name, workload]) => ({ name, workload }))
-    .sort((left, right) => (right.workload.active + right.workload.invitations) - (left.workload.active + left.workload.invitations) || left.name.localeCompare(right.name))
-  const visibleTeamRows = teamRows.slice(0, 5)
-  const heatLevel = (value: number) => value === 0 ? 0 : value === 1 ? 1 : value === 2 ? 2 : 3
-  const teamColumns = [
-    { label: 'Active', key: 'active' as const },
-    { label: 'Invites', key: 'invitations' as const },
-    { label: 'Reviews', key: 'reviews' as const },
-    { label: 'Revisions', key: 'revisions' as const },
-    { label: 'Payments', key: 'payments' as const },
+  for (const projectItem of projects) {
+    const collaborator = (user.role === 'client' ? projectItem.freelancer_name : projectItem.client_name)?.trim()
+    if (collaborator) getTeamMember(collaborator)
+  }
+  const projectById = new Map<string, Project>(projects.map((item) => [item.id, item] as const))
+  const monthIndex = new Map(activityMonths.map((month, index) => [month.key, index] as const))
+  for (const event of activity) {
+    if (event.actor_type !== counterpartRole) continue
+    const projectItem = projectById.get(event.project_id)
+    if (!projectItem) continue
+    const collaborator = (user.role === 'client' ? projectItem.freelancer_name : projectItem.client_name)?.trim()
+    if (!collaborator) continue
+    const date = new Date(event.created_at)
+    const index = monthIndex.get(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`)
+    if (index !== undefined) getTeamMember(collaborator).months[index] += 1
+  }
+  const teamRows = [...teamActivity.values()]
+    .sort((left, right) => right.months.reduce((sum, count) => sum + count, 0) - left.months.reduce((sum, count) => sum + count, 0) || left.name.localeCompare(right.name))
+  const visibleTeamRows = [
+    ...teamRows.slice(0, 4).map((member) => ({ ...member, isSummary: false })),
+    ...(teamRows.length ? [{ name: 'Team Activity', months: activityMonths.map((_, index) => teamRows.reduce((sum, member) => sum + member.months[index], 0)), isSummary: true }] : []),
   ]
+  const activityLevel = (value: number) => value === 0 ? 0 : value <= 2 ? 1 : value <= 5 ? 2 : 3
   return <>
     <div className="dashboard-page-heading"><div><span className="eyebrow">YOUR WORKSPACE</span><h1>Collaboration Dashboard</h1><p>Projects, decisions, and payments in one shared workspace.</p></div><span className="dashboard-user-pill"><i/>{user.role === 'client' ? 'Client workspace' : 'Freelancer workspace'}</span></div>
     <div className="dashboard-section-title"><div><span className="eyebrow">WORKSPACE HEALTH</span><h2>Performance Hub</h2></div><p>Project pipeline and next steps at a glance.</p></div>
@@ -777,20 +793,20 @@ function Dashboard({ user, projects, busy, searchQuery, activity, activityLoadin
     <div className="dashboard-lower-grid">
       <RecentActivity activity={activity} loading={activityLoading} error={activityError} onOpenActivity={onOpenActivity} onViewAll={onOpenInsights}/>
       <section className="surface team-availability-card" aria-labelledby="team-availability-heading">
-        <div className="section-head"><div><span className="eyebrow">COLLABORATOR LOAD</span><h2 id="team-availability-heading">Team Availability</h2><p>Assignment snapshot across your collaborators.</p></div><span className="team-member-count">{teamRows.length}</span></div>
+        <div className="section-head"><div><span className="eyebrow">MONTHLY ACTIVITY</span><h2 id="team-availability-heading">Team Activity</h2><p>Recent workspace updates by collaborator.</p></div><span className="team-member-count">{teamRows.length}</span></div>
         {visibleTeamRows.length === 0 ? <div className="team-availability-empty"><span>▦</span><strong>Your team map will appear here</strong><p>Collaborators show up as soon as a project is created or invited.</p></div> : <>
-          <div className="team-heatmap" role="table" aria-label="Collaborator workload heatmap">
-            <div className="team-heatmap-row team-heatmap-header" role="row"><span role="columnheader">Collaborator</span>{teamColumns.map((column) => <span role="columnheader" key={column.key}>{column.label}</span>)}</div>
-            {visibleTeamRows.map(({ name, workload }) => <div className="team-heatmap-row" role="row" key={name}>
-              <span className="team-heatmap-name" role="rowheader" title={name}><i>{name.slice(0, 1).toUpperCase()}</i><span>{name}</span></span>
-              {teamColumns.map((column) => {
-                const value = workload[column.key]
-                return <span className={`team-heat-cell heat-${heatLevel(value)}`} role="cell" key={column.key} title={`${name}: ${value} ${column.label.toLowerCase()}`} aria-label={`${column.label}: ${value}`}><i>{value || ''}</i></span>
+          <div className="team-heatmap" role="table" aria-label="Monthly project activity by collaborator">
+            <div className="team-heatmap-row team-heatmap-header" role="row"><span role="columnheader">Collaborator</span>{activityMonths.map((month) => <span role="columnheader" key={month.key}>{month.label}</span>)}</div>
+            {visibleTeamRows.map(({ name, months, isSummary }) => <div className={`team-heatmap-row${isSummary ? ' team-heatmap-summary' : ''}`} role="row" key={name}>
+              <span className="team-heatmap-name" role="rowheader" title={name}><i>{isSummary ? 'Σ' : name.slice(0, 1).toUpperCase()}</i><span>{name}</span></span>
+              {activityMonths.map((month, index) => {
+                const value = months[index] || 0
+                return <span className={`team-heat-cell level-${activityLevel(value)}`} role="cell" key={month.key} title={`${name} · ${month.label}: ${value} update${value === 1 ? '' : 's'}`} aria-label={`${month.label}: ${value} workflow update${value === 1 ? '' : 's'}`}/>
               })}
             </div>)}
           </div>
-          <div className="team-heatmap-footer"><span>{teamRows.length > visibleTeamRows.length ? `Showing ${visibleTeamRows.length} of ${teamRows.length} collaborators` : 'Current project workload'}</span><div className="team-heatmap-legend"><span><i className="heat-0"/>Available</span><span><i className="heat-1"/>Light</span><span><i className="heat-2"/>Balanced</span><span><i className="heat-3"/>Busy</span></div></div>
-          <p className="team-availability-note">Estimated from active assignments; calendar schedules are not connected.</p>
+          <div className="team-heatmap-footer"><span>12-month view · latest 30 workspace events</span><div className="team-heatmap-legend"><span><i className="level-0"/>None</span><span><i className="level-1"/>Light</span><span><i className="level-2"/>Active</span><span><i className="level-3"/>Busy</span></div></div>
+          <p className="team-availability-note">Activity is based on saved project events; calendar availability is not connected.</p>
         </>}
       </section>
     </div>

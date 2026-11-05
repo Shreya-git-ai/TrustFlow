@@ -30,6 +30,25 @@ export default function InsightsPage({
   const decisions = projects.reduce((sum, project) => sum + (project.decision_due_count || 0), 0)
   const payments = projects.reduce((sum, project) => sum + (project.active_payment_count || 0), 0)
   const activityError = error || ''
+  const projectById = new Map<string, Project>(projects.map((project) => [project.id, project] as const))
+  const auditProjects = new Map<string, { id: string; title: string; loose: WorkspaceActivity[]; milestones: Map<string, { title: string; events: WorkspaceActivity[] }> }>()
+  for (const item of activity) {
+    let group = auditProjects.get(item.project_id)
+    if (!group) {
+      group = { id: item.project_id, title: item.project_title, loose: [], milestones: new Map() }
+      auditProjects.set(item.project_id, group)
+    }
+    if (!item.milestone_id) {
+      group.loose.push(item)
+      continue
+    }
+    let milestone = group.milestones.get(item.milestone_id)
+    if (!milestone) {
+      milestone = { title: item.milestone_title || 'Milestone', events: [] }
+      group.milestones.set(item.milestone_id, milestone)
+    }
+    milestone.events.push(item)
+  }
   return <>
     <div className="page-heading workspace-page-heading"><div><span className="eyebrow">WORKSPACE / INSIGHTS</span><h1>Insights</h1><p>A live view of your projects, reviews, decisions, and payment progress.</p></div><button type="button" className="secondary-button" onClick={onRefresh} disabled={loading}>↻ Refresh activity</button></div>
     <div className="insights-kpi-grid">
@@ -45,8 +64,31 @@ export default function InsightsPage({
         <div className="insights-project-list">{projects.slice(0, 8).map((project) => <button type="button" key={project.id} onClick={() => onOpenProject(project.id)}><span><strong>{project.title}</strong><small>{role === 'client' ? project.freelancer_name : project.client_name}</small></span><span className={`status-chip ${project.membership_status}`}>{project.membership_status === 'invited' ? 'Invited' : project.membership_status === 'declined' ? 'Declined' : 'Active'}</span><i aria-hidden="true">↗</i></button>)}</div>
         {projects.length === 0 && <p className="muted">Create or accept a project to start seeing workspace insights.</p>}
       </section>
-      <section className="surface insights-activity"><div className="section-head"><div><span className="eyebrow">AUDIT EVENTS</span><h2>Recent changes</h2><p>Events recorded from project workflows.</p></div></div>
-        {loading ? <div className="activity-state" role="status">Loading activity…</div> : activityError ? <div className="activity-state error" role="alert">{activityError}</div> : activity.length === 0 ? <div className="activity-state">No project events yet.</div> : <div className="insights-event-list">{activity.slice(0, 10).map((item) => <button type="button" key={`${item.event_type}-${item.created_at}-${item.project_id}`} onClick={() => onOpenActivity(item)}><span className="insights-event-dot"/><span><strong>{activityLabels[item.event_type] || item.event_type.replaceAll('.', ' ')}</strong><small>{item.project_title}{item.milestone_title ? ` · ${item.milestone_title}` : ''}</small><small>{new Date(item.created_at).toLocaleString()} · {item.actor_type}</small></span><i aria-hidden="true">↗</i></button>)}</div>}
+      <section className="surface insights-activity"><div className="section-head"><div><span className="eyebrow">AUDIT EVENTS</span><h2>Recent changes</h2><p>Events recorded from project workflows, grouped by project and milestone.</p></div></div>
+        {loading ? <div className="activity-state" role="status">Loading activity…</div> : activityError ? <div className="activity-state error" role="alert">{activityError}</div> : activity.length === 0 ? <div className="activity-state">No project events yet.</div> : <div className="audit-tree">
+          {[...auditProjects.values()].map((group) => {
+            const project = projectById.get(group.id)
+            const isActive = project?.membership_status === 'accepted'
+            return <section className="audit-project" key={group.id}>
+              <button type="button" className="audit-project-row" onClick={() => onOpenProject(group.id)}>
+                <span className="audit-project-icon" aria-hidden="true">▣</span><strong>{group.title}</strong>
+                <span className={`audit-project-status ${isActive ? 'active' : project?.membership_status || 'active'}`}><i/>{isActive ? 'Active' : project?.membership_status === 'invited' ? 'Invitation' : project?.membership_status === 'declined' ? 'Declined' : 'Activity'}</span>
+                <i className="audit-branch-arrow" aria-hidden="true">↗</i>
+              </button>
+              <div className="audit-project-branches">
+                {group.loose.map((item) => <button type="button" className="audit-event-row project-event" key={`${item.event_type}-${item.created_at}`} onClick={() => onOpenActivity(item)}>
+                  <span className={`audit-event-marker ${item.event_type.split('.')[0]}`} aria-hidden="true"/><span className="audit-event-copy"><strong>{activityLabels[item.event_type] || item.event_type.replaceAll('.', ' ')}</strong><small>{new Date(item.created_at).toLocaleString()} · {item.actor_type}</small></span><i className="audit-branch-arrow" aria-hidden="true">↗</i>
+                </button>)}
+                {[...group.milestones.entries()].map(([milestoneId, milestone]) => <div className="audit-milestone" key={milestoneId}>
+                  <div className="audit-milestone-row"><span className="audit-milestone-node" aria-hidden="true"/><span className="audit-milestone-icon" aria-hidden="true">◇</span><strong>{milestone.title}</strong></div>
+                  <div className="audit-milestone-events">{milestone.events.map((item) => <button type="button" className="audit-event-row" key={`${item.event_type}-${item.created_at}`} onClick={() => onOpenActivity(item)}>
+                    <span className={`audit-event-marker ${item.event_type.split('.')[0]}`} aria-hidden="true"/><span className="audit-event-copy"><strong>{activityLabels[item.event_type] || item.event_type.replaceAll('.', ' ')}</strong><small>{new Date(item.created_at).toLocaleString()} · {item.actor_type}</small></span><i className="audit-branch-arrow" aria-hidden="true">↗</i>
+                  </button>)}</div>
+                </div>)}
+              </div>
+            </section>
+          })}
+        </div>}
       </section>
     </div>
   </>
