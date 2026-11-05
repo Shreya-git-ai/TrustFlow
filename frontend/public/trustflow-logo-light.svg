@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 180" role="img" aria-label="Trustflow">
+  <defs><linearGradient id="flow" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#54a8f4"/><stop offset=".52" stop-color="#4264db"/><stop offset="1" stop-color="#8d68ee"/></linearGradient></defs>
+  <path d="M24 55C24 25 48 1 78 1h111v48c0 31-25 56-56 56H24z" fill="url(#flow)" opacity=".94"/>
+  <path d="M92 55h98v63c0 31-25 56-56 56h-42z" fill="url(#flow)" opacity=".94"/>
+  <path d="M137 1h52v48c0 31-25 56-56 56h-41V57c0-31 20-56 45-56z" fill="#8465ec" opacity=".72"/>
+  <text x="225" y="136" fill="#fff" font-family="Arial, Helvetica, sans-serif" font-size="112" font-weight="800" letter-spacing="-5">Trustflow</text>
+</svg>

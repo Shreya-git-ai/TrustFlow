@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <defs>
+    <linearGradient id="house-stroke" x1="37" y1="35" x2="91" y2="101" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a99cff"/>
+      <stop offset="1" stop-color="#d0c8ff"/>
+    </linearGradient>
+  </defs>
+  <path d="M37 61 64 35l27 26v34a5 5 0 0 1-5 5H42a5 5 0 0 1-5-5V61Z" stroke="url(#house-stroke)" stroke-width="8" stroke-linejoin="round"/>
+  <circle cx="64" cy="76" r="5" fill="#a99cff"/>
+</svg>
