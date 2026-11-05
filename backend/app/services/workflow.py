@@ -57,6 +57,18 @@ def list_projects(user: dict) -> list[dict]:
         rows = connection.execute(
             """SELECT p.*, c.display_name AS client_name, f.display_name AS freelancer_name,
                       COUNT(m.id) AS milestone_count,
+                      -- Average each milestone's current workflow stage into a project progress estimate.
+                      ROUND(100 * COALESCE(AVG(
+                          CASE
+                              WHEN m.id IS NULL THEN NULL
+                              WHEN m.status = 'paid' THEN 1.0
+                              WHEN m.status = 'approved' THEN 0.85
+                              WHEN m.status = 'submitted' THEN 0.65
+                              WHEN m.status = 'revision_requested' THEN 0.5
+                              WHEN m.status = 'in_progress' THEN 0.25
+                              ELSE 0.0
+                          END
+                      ), 0))::INTEGER AS progress_percent,
                       COUNT(m.id) FILTER (WHERE m.status = 'submitted') AS submitted_count,
                       COUNT(m.id) FILTER (WHERE m.status = 'revision_requested') AS revision_count,
                       COUNT(m.id) FILTER (
