@@ -47,6 +47,7 @@ export default function TeamDirectoryPage({ projects, role, onOpenProject }: {
     </div>
     <section className="surface directory-card">
       <div className="directory-toolbar"><div><h2>Your collaborators</h2><p>Project contacts are shown from your current workspace records.</p></div><label className="directory-search"><span aria-hidden="true">⌕</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search people or projects" aria-label="Search people or projects"/>{search && <button type="button" onClick={() => setSearch('')} aria-label="Clear search">×</button>}</label></div>
+      {filteredMembers.length > 0 && <div className="directory-columns" aria-hidden="true"><span/><span>Collaborator</span><span>Active projects</span><span>Invitations</span><span>Projects</span></div>}
       {filteredMembers.length === 0 ? <div className="directory-empty"><strong>{members.length ? 'No collaborators match that search' : 'Your team will appear here'}</strong><p>{members.length ? 'Try a different name or project title.' : 'Create or accept a project invitation to start building your workspace directory.'}</p></div> : <div className="directory-list" role="list">
         {filteredMembers.map((member) => {
           const active = member.projects.filter((project) => project.membership_status === 'accepted').length
@@ -55,7 +56,7 @@ export default function TeamDirectoryPage({ projects, role, onOpenProject }: {
             <span className="directory-avatar" aria-hidden="true">{member.name.slice(0, 1).toUpperCase()}</span>
             <div className="directory-person"><strong>{member.name}</strong><span>{member.role === 'freelancer' ? 'Freelancer' : 'Client'}</span></div>
             <div className="directory-count"><strong>{active}</strong><span>active project{active === 1 ? '' : 's'}</span></div>
-            {invited > 0 && <span className="directory-invitation-pill">{invited} invitation{invited === 1 ? '' : 's'}</span>}
+            <span className={`directory-invitation-pill${invited ? '' : ' empty'}`}>{invited ? `${invited} invitation${invited === 1 ? '' : 's'}` : '—'}</span>
             <div className="directory-project-links">{member.projects.slice(0, 2).map((project) => <button type="button" key={project.id} onClick={() => onOpenProject(project.id)}>{project.title}<span aria-hidden="true">↗</span></button>)}{member.projects.length > 2 && <span>+{member.projects.length - 2} more</span>}</div>
           </article>
         })}
