@@ -29,7 +29,7 @@ export default function RecentActivity({
   onOpenActivity: (item: WorkspaceActivity) => void; onViewAll: () => void
 }) {
   return <section className="surface activity-preview-card">
-    <div className="section-head"><div><span className="eyebrow">WORKSPACE UPDATES</span><h2>Recent activity</h2><p>Updates recorded across your projects.</p></div><button className="text-button activity-view-all" type="button" onClick={onViewAll}>View insights →</button></div>
+    <div className="section-head"><div><span className="eyebrow">WORKSPACE UPDATES</span><h2>Project Activity Timeline</h2><p>Updates recorded across your projects.</p></div><button className="text-button activity-view-all" type="button" onClick={onViewAll}>View insights →</button></div>
     {loading ? <div className="activity-state" role="status">Loading project activity…</div> : error ? <div className="activity-state error" role="alert">{error}</div> : activity.length === 0 ? <div className="activity-state"><strong>No activity yet</strong><p>Project creation, submissions, decisions, and payment updates will appear here.</p></div> : <div className="activity-preview-list">
       {activity.slice(0, 5).map((item) => <button className="activity-event" type="button" key={`${item.event_type}-${item.created_at}-${item.project_id}`} onClick={() => onOpenActivity(item)}>
         <span className={`activity-preview-icon ${eventTone(item.event_type)}`}>{item.event_type.startsWith('payment.') ? '$' : item.event_type.startsWith('evidence.') ? '◇' : item.event_type.includes('approved') ? '✓' : '↗'}</span>
