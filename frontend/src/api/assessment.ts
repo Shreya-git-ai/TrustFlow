@@ -6,7 +6,7 @@ export type User = { id: string; name: string; email: string; role: 'client' | '
 export type Project = {
   id: string; title: string; description: string | null; currency: string; status: string
   membership_status: 'invited' | 'accepted' | 'declined'; client_name: string; freelancer_name: string
-  milestone_count?: number; submitted_count?: number; revision_count?: number
+  milestone_count?: number; progress_percent?: number; submitted_count?: number; revision_count?: number
   decision_due_count?: number; active_payment_count?: number; milestones?: Milestone[]
 }
 export type Milestone = {
