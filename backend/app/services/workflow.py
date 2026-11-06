@@ -6,11 +6,13 @@ import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 from psycopg.types.json import Jsonb
 
 from app.db.repository import read_connection, transaction
+from app.services.email import email_delivery_configured
 from app.services.events import enqueue_event, event_recipient_email, event_recipient_name, milestone_review_url, workspace_url
 
 
@@ -34,7 +36,7 @@ def _project_for(connection, project_id: str, user: dict) -> dict:
 def _milestone_for(connection, milestone_id: str, user: dict, *, for_update: bool = False) -> tuple[dict, dict]:
     lock_clause = " FOR UPDATE OF m" if for_update else ""
     row = connection.execute(
-        f"""SELECT m.*, p.client_id, p.freelancer_id, p.membership_status
+        f"""SELECT m.*, p.client_id, p.freelancer_id, p.membership_status, p.title AS project_title
            FROM milestones m JOIN projects p ON p.id = m.project_id
            WHERE m.id = %s AND (p.client_id = %s OR p.freelancer_id = %s){lock_clause}""",
         (milestone_id, user["id"], user["id"]),
@@ -55,7 +57,8 @@ def _audit(connection, event: str, user: dict, project_id=None, milestone_id=Non
 def list_projects(user: dict) -> list[dict]:
     with read_connection() as connection:
         rows = connection.execute(
-            """SELECT p.*, c.display_name AS client_name, f.display_name AS freelancer_name,
+            """SELECT p.*, c.display_name AS client_name, COALESCE(f.display_name, p.invited_email) AS freelancer_name,
+                      BOOL_OR(f.paypal_merchant_id IS NOT NULL) AS freelancer_paypal_connected,
                       COUNT(m.id) AS milestone_count,
                       -- Average each milestone's current workflow stage into a project progress estimate.
                       ROUND(100 * COALESCE(AVG(
@@ -77,7 +80,7 @@ def list_projects(user: dict) -> list[dict]:
                             AND NOT COALESCE(latest_review.is_stale, TRUE)
                       ) AS decision_due_count,
                       COUNT(m.id) FILTER (WHERE pay.status IN ('created', 'buyer_approved', 'authorized', 'capture_pending')) AS active_payment_count
-               FROM projects p JOIN users c ON c.id = p.client_id JOIN users f ON f.id = p.freelancer_id
+               FROM projects p JOIN users c ON c.id = p.client_id LEFT JOIN users f ON f.id = p.freelancer_id
                LEFT JOIN milestones m ON m.project_id = p.id
                LEFT JOIN payments pay ON pay.milestone_id = m.id
                LEFT JOIN LATERAL (
@@ -95,20 +98,30 @@ def list_projects(user: dict) -> list[dict]:
 def create_project(user: dict, title: str, description: str, currency: str, freelancer_email: str) -> dict:
     if user["role"] != "client":
         raise DomainError(403, "Only clients can create projects")
+    title = title.strip()
+    if not title:
+        raise DomainError(422, "Add a project name")
+    freelancer_email = freelancer_email.strip().lower()
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", freelancer_email):
+        raise DomainError(422, "Enter a valid freelancer email address")
+    if currency != currency.upper() or not re.fullmatch(r"[A-Z]{3}", currency):
+        raise DomainError(422, "Currency must be a 3-letter uppercase code")
     with transaction() as connection:
         freelancer = connection.execute(
-            "SELECT id, email, display_name FROM users WHERE lower(email) = lower(%s) AND role = 'freelancer'",
+            "SELECT id, email, display_name, role FROM users WHERE lower(email) = lower(%s)",
             (freelancer_email,),
         ).fetchone()
-        if freelancer is None:
-            raise DomainError(404, "Create a freelancer account before inviting them")
-        if freelancer["id"] == user["id"]:
+        if freelancer is not None and freelancer["role"] != "freelancer":
+            raise DomainError(409, "That email belongs to a client account. Invite a freelancer email address.")
+        if freelancer is None and not email_delivery_configured() and not os.getenv("ZAPIER_WEBHOOK_URL", "").strip():
+            raise DomainError(503, "Email invitations are not configured. Set up SMTP or the workflow Zapier hook before inviting a new freelancer.")
+        if freelancer is not None and str(freelancer["id"]) == user["id"]:
             raise DomainError(422, "A client cannot invite their own account")
         row = connection.execute(
-            """INSERT INTO projects(client_id, freelancer_id, title, description, currency,
+            """INSERT INTO projects(client_id, freelancer_id, invited_email, title, description, currency,
                                   status, membership_status)
-               VALUES (%s, %s, %s, %s, %s, 'active', 'invited') RETURNING *""",
-            (user["id"], freelancer["id"], title.strip(), description.strip() or None, currency, ),
+               VALUES (%s, %s, %s, %s, %s, %s, 'active', 'invited') RETURNING *""",
+            (user["id"], freelancer["id"] if freelancer else None, freelancer_email, title.strip(), description.strip() or None, currency),
         ).fetchone()
         connection.execute("UPDATE projects SET membership_status = 'invited', membership_accepted_at = NULL WHERE id = %s", (row["id"],))
         _audit(connection, "project.created", user, project_id=row["id"], details={"title": title.strip(), "invited_freelancer": freelancer_email})
@@ -121,13 +134,21 @@ def create_project(user: dict, title: str, description: str, currency: str, free
                 "project_title": title.strip(),
                 "project_name": title.strip(),
                 "client_id": str(user["id"]),
-                "display_name": freelancer["display_name"],
-                "recipient_email": freelancer["email"] if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
-                "workspace_url": workspace_url(),
+                "display_name": freelancer["display_name"] if freelancer else "",
+                "recipient_email": freelancer_email if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "workspace_url": _invitation_signup_url(freelancer_email),
             },
             idempotency_key=str(row["id"]),
         )
     return dict(row)
+
+
+def _invitation_signup_url(email: str) -> str | None:
+    base = workspace_url()
+    if not base:
+        return None
+    parsed = urlsplit(base)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode({"signup": "freelancer", "email": email}), ""))
 
 
 def accept_project(user: dict, project_id: str) -> dict:
@@ -135,20 +156,140 @@ def accept_project(user: dict, project_id: str) -> dict:
         raise DomainError(403, "Only freelancers can accept project invitations")
     with transaction() as connection:
         row = connection.execute(
-            """UPDATE projects SET membership_status = 'accepted', membership_accepted_at = NOW()
-               WHERE id = %s AND freelancer_id = %s AND membership_status = 'invited'
+            """UPDATE projects SET freelancer_id = %s, membership_status = 'accepted', membership_accepted_at = NOW()
+               WHERE id = %s AND (freelancer_id = %s OR (freelancer_id IS NULL AND lower(invited_email) = lower(%s)))
+                 AND membership_status = 'invited' AND status = 'active'
                RETURNING *""",
-            (project_id, user["id"]),
+            (user["id"], project_id, user["id"], user["email"]),
         ).fetchone()
         if row is None:
             raise DomainError(404, "Project invitation not found")
         _audit(connection, "project.invitation_accepted", user, project_id=row["id"])
+        enqueue_event(
+            connection,
+            "project.invitation_accepted",
+            {
+                "project_id": str(row["id"]),
+                "project_title": row["title"],
+                "project_name": row["title"],
+                "freelancer_id": str(user["id"]),
+                "display_name": user.get("name", ""),
+                "recipient_email": event_recipient_email(connection, str(row["client_id"])),
+                "review_url": workspace_url(),
+            },
+            idempotency_key=str(row["id"]),
+        )
+    return dict(row)
+
+
+def decline_project(user: dict, project_id: str) -> dict:
+    if user["role"] != "freelancer":
+        raise DomainError(403, "Only freelancers can decline project invitations")
+    with transaction() as connection:
+        row = connection.execute(
+            """UPDATE projects SET freelancer_id = COALESCE(freelancer_id, %s), membership_status = 'declined'
+               WHERE id = %s AND (freelancer_id = %s OR (freelancer_id IS NULL AND lower(invited_email) = lower(%s)))
+                 AND membership_status = 'invited' AND status = 'active'
+               RETURNING id, title, client_id""",
+            (user["id"], project_id, user["id"], user["email"]),
+        ).fetchone()
+        if row is None:
+            raise DomainError(404, "Project invitation not found")
+        _audit(connection, "project.invitation_declined", user, project_id=row["id"])
+        enqueue_event(
+            connection,
+            "project.invitation_declined",
+            {
+                "project_id": str(row["id"]),
+                "project_title": row["title"],
+                "project_name": row["title"],
+                "freelancer_id": str(user["id"]),
+                "display_name": user.get("name", ""),
+                "recipient_email": event_recipient_email(connection, str(row["client_id"])),
+                "review_url": workspace_url(),
+            },
+            idempotency_key=str(row["id"]),
+        )
+    return {"id": str(row["id"]), "membership_status": "declined"}
+
+
+def cancel_project_invitation(user: dict, project_id: str) -> dict:
+    if user["role"] != "client":
+        raise DomainError(403, "Only the project client can cancel an invitation")
+    with transaction() as connection:
+        row = connection.execute(
+            """UPDATE projects SET membership_status = 'cancelled', status = 'cancelled'
+               WHERE id = %s AND client_id = %s AND membership_status = 'invited' AND status = 'active'
+               RETURNING id, title, invited_email""",
+            (project_id, user["id"]),
+        ).fetchone()
+        if row is None:
+            raise DomainError(409, "Only a pending invitation can be cancelled")
+        _audit(connection, "project.invitation_cancelled", user, project_id=row["id"])
+        enqueue_event(
+            connection,
+            "project.invitation_cancelled",
+            {
+                "project_id": str(row["id"]),
+                "project_title": row["title"],
+                "project_name": row["title"],
+                "client_id": str(user["id"]),
+                "recipient_email": row["invited_email"] if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "workspace_url": workspace_url(),
+            },
+            idempotency_key=str(row["id"]),
+        )
+    return {
+        "id": str(row["id"]),
+        "membership_status": "cancelled",
+        "invited_email": row["invited_email"],
+        "title": row["title"],
+    }
+
+
+def resend_project_invitation(user: dict, project_id: str) -> dict:
+    if user["role"] != "client":
+        raise DomainError(403, "Only the project client can resend an invitation")
+    if not email_delivery_configured() and not os.getenv("ZAPIER_WEBHOOK_URL", "").strip():
+        raise DomainError(503, "Email invitations are not configured. Set up SMTP or the workflow Zapier hook before resending.")
+    with transaction() as connection:
+        row = connection.execute(
+            """SELECT project.id, project.title, project.invited_email, client.display_name AS client_name
+               FROM projects project JOIN users client ON client.id = project.client_id
+               WHERE project.id = %s AND project.client_id = %s
+                 AND project.membership_status = 'invited' AND project.status = 'active'
+               FOR UPDATE OF project""",
+            (project_id, user["id"]),
+        ).fetchone()
+        if row is None:
+            raise DomainError(409, "Only a pending invitation can be resent")
+        enqueue_event(
+            connection,
+            "project.invitation_resent",
+            {
+                "project_id": str(row["id"]), "project_title": row["title"], "project_name": row["title"],
+                "client_id": str(user["id"]),
+                "recipient_email": row["invited_email"] if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "workspace_url": _invitation_signup_url(row["invited_email"]),
+            },
+            idempotency_key=str(uuid4()),
+        )
+        _audit(connection, "project.invitation_resent", user, project_id=row["id"])
     return dict(row)
 
 
 def get_project(user: dict, project_id: str) -> dict:
     with read_connection() as connection:
-        project = _project_for(connection, project_id, user)
+        _project_for(connection, project_id, user)
+        project = connection.execute(
+            """SELECT p.*, client.display_name AS client_name,
+                      COALESCE(freelancer.display_name, p.invited_email) AS freelancer_name,
+                      (freelancer.paypal_merchant_id IS NOT NULL) AS freelancer_paypal_connected
+               FROM projects p JOIN users client ON client.id = p.client_id
+               LEFT JOIN users freelancer ON freelancer.id = p.freelancer_id
+               WHERE p.id = %s""",
+            (project_id,),
+        ).fetchone()
         milestones = connection.execute(
             """SELECT m.*, (SELECT COUNT(*) FROM evidence e WHERE e.milestone_id = m.id) AS evidence_count,
                       (SELECT COUNT(*) FROM assessment_reports a WHERE a.milestone_id = m.id) AS assessment_count,
@@ -162,6 +303,9 @@ def get_project(user: dict, project_id: str) -> dict:
 
 
 def create_milestone(user: dict, project_id: str, title: str, criteria: list[str], amount: Decimal, currency: str, due_at: datetime | None) -> dict:
+    title = title.strip()
+    if not title:
+        raise DomainError(422, "Add a milestone name")
     clean_criteria = [item.strip() for item in criteria]
     if not clean_criteria or any(not item or len(item) > 1000 for item in clean_criteria):
         raise DomainError(422, "Add 1 to 50 non-empty acceptance criteria (up to 1,000 characters each)")
@@ -173,9 +317,11 @@ def create_milestone(user: dict, project_id: str, title: str, criteria: list[str
         project = _project_for(connection, project_id, user)
         if str(project["client_id"]) != user["id"]:
             raise DomainError(403, "Only the project client can manage milestones")
+        if project["status"] != "active" or project["membership_status"] in {"cancelled", "declined"}:
+            raise DomainError(409, "Milestones cannot be added to a cancelled or declined project")
         row = connection.execute(
-            """INSERT INTO milestones(project_id, title, acceptance_criteria, amount, currency, due_at, status)
-               VALUES (%s, %s, %s, %s, %s, %s, 'pending') RETURNING *""",
+            """INSERT INTO milestones(project_id, title, acceptance_criteria, amount, currency, due_at, status, agreement_status)
+               VALUES (%s, %s, %s, %s, %s, %s, 'pending', 'pending') RETURNING *""",
             (project_id, title.strip(), Jsonb(clean_criteria), amount, currency, due_at),
         ).fetchone()
         _audit(connection, "milestone.created", user, project_id=project_id, milestone_id=row["id"], details={"criteria_count": len(clean_criteria), "amount": str(amount), "currency": currency})
@@ -189,11 +335,11 @@ def create_milestone(user: dict, project_id: str, title: str, criteria: list[str
                 "project_title": project["title"],
                 "project_name": project["title"],
                 "client_id": str(project["client_id"]),
-                "freelancer_id": str(project["freelancer_id"]),
-                "recipient_email": event_recipient_email(connection, str(project["freelancer_id"]))
+                "freelancer_id": str(project["freelancer_id"]) if project["freelancer_id"] else None,
+                "recipient_email": (event_recipient_email(connection, str(project["freelancer_id"])) if project["freelancer_id"] else project["invited_email"])
                 if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
                 "display_name": event_recipient_name(connection, str(project["freelancer_id"]))
-                if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                if project["freelancer_id"] and os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
                 "review_url": milestone_review_url(str(project_id), str(row["id"])),
             },
             idempotency_key=str(row["id"]),
@@ -202,6 +348,9 @@ def create_milestone(user: dict, project_id: str, title: str, criteria: list[str
 
 
 def update_milestone(user: dict, project_id: str, milestone_id: str, title: str, criteria: list[str], amount: Decimal, currency: str, due_at: datetime | None) -> dict:
+    title = title.strip()
+    if not title:
+        raise DomainError(422, "Add a milestone name")
     clean_criteria = [item.strip() for item in criteria]
     if not clean_criteria or len(clean_criteria) > 50 or any(not item or len(item) > 1000 for item in clean_criteria):
         raise DomainError(422, "Add 1 to 50 non-empty acceptance criteria (up to 1,000 characters each)")
@@ -213,6 +362,8 @@ def update_milestone(user: dict, project_id: str, milestone_id: str, title: str,
         project = _project_for(connection, project_id, user)
         if user["role"] != "client" or str(project["client_id"]) != user["id"]:
             raise DomainError(403, "Only the project client can edit milestones")
+        if project["status"] != "active" or project["membership_status"] in {"declined", "cancelled"}:
+            raise DomainError(409, "Milestones cannot be changed in a cancelled or declined project")
         milestone = connection.execute("SELECT * FROM milestones WHERE id = %s AND project_id = %s FOR UPDATE", (milestone_id, project_id)).fetchone()
         if milestone is None:
             raise DomainError(404, "Milestone not found")
@@ -221,7 +372,8 @@ def update_milestone(user: dict, project_id: str, milestone_id: str, title: str,
         if milestone["evidence_revision"] > 0 or evidence or payment:
             raise DomainError(409, "Milestone terms are locked after evidence or payment begins")
         row = connection.execute(
-            """UPDATE milestones SET title = %s, acceptance_criteria = %s, amount = %s, currency = %s, due_at = %s
+            """UPDATE milestones SET title = %s, acceptance_criteria = %s, amount = %s, currency = %s, due_at = %s,
+                      agreement_status = 'pending', agreement_note = ''
                WHERE id = %s AND project_id = %s RETURNING *""",
             (title.strip(), Jsonb(clean_criteria), amount, currency, due_at, milestone_id, project_id),
         ).fetchone()
@@ -236,16 +388,58 @@ def update_milestone(user: dict, project_id: str, milestone_id: str, title: str,
                 "project_title": project["title"],
                 "project_name": project["title"],
                 "client_id": str(project["client_id"]),
-                "freelancer_id": str(project["freelancer_id"]),
-                "recipient_email": event_recipient_email(connection, str(project["freelancer_id"]))
+                "freelancer_id": str(project["freelancer_id"]) if project["freelancer_id"] else None,
+                "recipient_email": (event_recipient_email(connection, str(project["freelancer_id"])) if project["freelancer_id"] else project["invited_email"])
                 if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
                 "display_name": event_recipient_name(connection, str(project["freelancer_id"]))
-                if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                if project["freelancer_id"] and os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
                 "review_url": milestone_review_url(str(project_id), str(milestone_id)),
             },
             idempotency_key=str(uuid4()),
         )
     return dict(row)
+
+
+def decide_milestone_agreement(user: dict, milestone_id: str, decision: str, note: str = "") -> dict:
+    if user["role"] != "freelancer":
+        raise DomainError(403, "Only the assigned freelancer can respond to milestone terms")
+    if decision not in {"accepted", "changes_requested"}:
+        raise DomainError(422, "Choose accept terms or request changes")
+    clean_note = note.strip()[:2000]
+    if decision == "changes_requested" and not clean_note:
+        raise DomainError(422, "Explain what needs to change")
+    with transaction() as connection:
+        milestone, _ = _milestone_for(connection, milestone_id, user, for_update=True)
+        if str(milestone["freelancer_id"] or "") != user["id"]:
+            raise DomainError(403, "Only the assigned freelancer can respond to milestone terms")
+        if milestone["membership_status"] != "accepted" or milestone["status"] == "paid":
+            raise DomainError(409, "Accept the project invitation before responding to milestone terms")
+        if milestone["evidence_revision"] or milestone["status"] not in {"pending", "in_progress"}:
+            raise DomainError(409, "Milestone terms can no longer be changed")
+        connection.execute(
+            "UPDATE milestones SET agreement_status = %s, agreement_note = %s WHERE id = %s",
+            (decision, clean_note, milestone_id),
+        )
+        _audit(connection, f"milestone.agreement_{decision}", user, project_id=milestone["project_id"], milestone_id=milestone_id, details={"note": clean_note})
+        enqueue_event(
+            connection,
+            f"milestone.agreement_{decision}",
+            {
+                "project_id": str(milestone["project_id"]),
+                "milestone_id": str(milestone_id),
+                "project_title": milestone["project_title"],
+                "project_name": milestone["project_title"],
+                "milestone_title": milestone["title"],
+                "freelancer_id": str(user["id"]),
+                "display_name": user.get("name", ""),
+                "agreement_note": clean_note,
+                "recipient_email": event_recipient_email(connection, str(milestone["client_id"]))
+                if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "review_url": milestone_review_url(str(milestone["project_id"]), str(milestone_id)),
+            },
+            idempotency_key=str(uuid4()),
+        )
+    return {"milestone_id": str(milestone_id), "agreement_status": decision, "agreement_note": clean_note}
 
 
 def add_evidence(user: dict, milestone_id: str, description: str, links: list[str], file_info: tuple[str, str, str, bytes] | None) -> dict:
@@ -259,6 +453,8 @@ def add_evidence(user: dict, milestone_id: str, description: str, links: list[st
             raise DomainError(403, "Only the assigned freelancer can submit evidence")
         if milestone["membership_status"] != "accepted":
             raise DomainError(403, "Accept the project invitation before submitting work")
+        if milestone["agreement_status"] != "accepted":
+            raise DomainError(409, "Accept the milestone terms before submitting work")
         if milestone["status"] in {"approved", "paid"}:
             raise DomainError(409, "This milestone is already approved and cannot accept a new revision")
         revision = milestone["evidence_revision"] + 1
@@ -351,6 +547,8 @@ def evidence_snapshot(user: dict, milestone_id: str) -> tuple[dict, dict]:
             raise DomainError(403, "Only the project client can request an assessment")
         if milestone["membership_status"] != "accepted":
             raise DomainError(409, "The freelancer has not accepted this project")
+        if milestone["agreement_status"] != "accepted":
+            raise DomainError(409, "The freelancer has not accepted these milestone terms")
         evidence = connection.execute(
             "SELECT * FROM evidence WHERE milestone_id = %s ORDER BY evidence_revision DESC LIMIT 1",
             (milestone_id,),
@@ -459,6 +657,8 @@ def decide_milestone(user: dict, milestone_id: str, decision: str, note: str = "
         milestone, _ = _milestone_for(connection, milestone_id, user, for_update=True)
         if str(milestone["client_id"]) != user["id"]:
             raise DomainError(403, "Only the project client can make milestone decisions")
+        if milestone["agreement_status"] != "accepted":
+            raise DomainError(409, "The freelancer must accept the milestone terms before review decisions")
         payment = connection.execute("SELECT status FROM payments WHERE milestone_id = %s FOR UPDATE", (milestone_id,)).fetchone()
         latest = connection.execute(
             """SELECT id, evidence_revision, outcome, all_met, is_stale FROM assessment_reports
@@ -569,3 +769,66 @@ def activity_feed(user: dict, limit: int = 30) -> list[dict]:
         item["milestone_id"] = str(item["milestone_id"]) if item["milestone_id"] else None
         result.append(item)
     return result
+
+
+def notification_feed(user: dict, limit: int = 100) -> list[dict]:
+    with read_connection() as connection:
+        rows = connection.execute(
+            """SELECT a.id AS event_id, a.event_type, a.actor_type, a.created_at,
+                      a.project_id, p.title AS project_title, a.milestone_id,
+                      m.title AS milestone_title, (nr.audit_event_id IS NOT NULL) AS is_read
+               FROM audit_events a
+               JOIN projects p ON p.id = a.project_id
+               LEFT JOIN milestones m ON m.id = a.milestone_id
+               LEFT JOIN notification_reads nr ON nr.audit_event_id = a.id AND nr.user_id = %s
+               WHERE (p.client_id = %s OR p.freelancer_id = %s)
+                 AND a.actor_id IS DISTINCT FROM %s
+               ORDER BY a.created_at DESC, a.id DESC LIMIT %s""",
+            (user["id"], user["id"], user["id"], user["id"], max(1, min(limit, 100))),
+        ).fetchall()
+    return [{
+        **dict(row),
+        "event_id": int(row["event_id"]),
+        "project_id": str(row["project_id"]),
+        "milestone_id": str(row["milestone_id"]) if row["milestone_id"] else None,
+    } for row in rows]
+
+
+def mark_notifications_read(user: dict, event_ids: list[int]) -> int:
+    if not event_ids or len(event_ids) > 100:
+        raise DomainError(422, "Select between 1 and 100 notifications")
+    with transaction() as connection:
+        rows = connection.execute(
+            """INSERT INTO notification_reads(user_id, audit_event_id)
+               SELECT %s, a.id FROM audit_events a JOIN projects p ON p.id = a.project_id
+               WHERE a.id = ANY(%s::bigint[]) AND a.actor_id IS DISTINCT FROM %s
+                 AND (p.client_id = %s OR p.freelancer_id = %s)
+               ON CONFLICT (user_id, audit_event_id) DO NOTHING
+               RETURNING audit_event_id""",
+            (user["id"], event_ids, user["id"], user["id"], user["id"]),
+        ).fetchall()
+    return len(rows)
+
+
+def get_notification_preferences(user: dict) -> dict:
+    with read_connection() as connection:
+        row = connection.execute(
+            "SELECT project_updates, payment_alerts FROM notification_preferences WHERE user_id = %s",
+            (user["id"],),
+        ).fetchone()
+    if row is None:
+        return {"project_updates": True, "payment_alerts": True}
+    return {"project_updates": bool(row["project_updates"]), "payment_alerts": bool(row["payment_alerts"])}
+
+
+def update_notification_preferences(user: dict, project_updates: bool, payment_alerts: bool) -> dict:
+    with transaction() as connection:
+        row = connection.execute(
+            """INSERT INTO notification_preferences(user_id, project_updates, payment_alerts, updated_at)
+               VALUES (%s, %s, %s, NOW())
+               ON CONFLICT (user_id) DO UPDATE SET project_updates = EXCLUDED.project_updates,
+                   payment_alerts = EXCLUDED.payment_alerts, updated_at = NOW()
+               RETURNING project_updates, payment_alerts""",
+            (user["id"], project_updates, payment_alerts),
+        ).fetchone()
+    return {"project_updates": bool(row["project_updates"]), "payment_alerts": bool(row["payment_alerts"])}

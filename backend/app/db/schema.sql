@@ -3,18 +3,24 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT UNIQUE NOT NULL,
     display_name TEXT,
     role TEXT NOT NULL CHECK (role IN ('client', 'freelancer')),
+    paypal_merchant_id TEXT,
+    paypal_onboarding_tracking_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS projects (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     client_id UUID NOT NULL REFERENCES users(id),
-    freelancer_id UUID NOT NULL REFERENCES users(id),
+    freelancer_id UUID REFERENCES users(id),
+    invited_email TEXT NOT NULL,
     title TEXT NOT NULL,
     description TEXT,
     currency CHAR(3) NOT NULL DEFAULT 'USD',
     status TEXT NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'completed', 'cancelled')),
+    membership_status TEXT NOT NULL DEFAULT 'invited'
+        CHECK (membership_status IN ('invited', 'accepted', 'declined', 'cancelled')),
+    membership_accepted_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -26,6 +32,9 @@ CREATE TABLE IF NOT EXISTS milestones (
     amount NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
     currency CHAR(3) NOT NULL DEFAULT 'USD',
     due_at TIMESTAMPTZ,
+    agreement_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (agreement_status IN ('pending', 'accepted', 'changes_requested')),
+    agreement_note TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN (
             'pending', 'in_progress', 'submitted',
@@ -52,6 +61,7 @@ CREATE TABLE IF NOT EXISTS payments (
     paypal_order_id TEXT UNIQUE,
     paypal_authorization_id TEXT UNIQUE,
     paypal_capture_id TEXT UNIQUE,
+    paypal_payee_merchant_id TEXT,
     amount NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
     currency CHAR(3) NOT NULL DEFAULT 'USD',
     status TEXT NOT NULL DEFAULT 'created'
@@ -89,3 +99,17 @@ CREATE INDEX IF NOT EXISTS idx_projects_freelancer ON projects(freelancer_id);
 CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_milestone ON evidence(milestone_id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS notification_reads (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    audit_event_id BIGINT NOT NULL REFERENCES audit_events(id) ON DELETE CASCADE,
+    read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, audit_event_id)
+);
+
+CREATE TABLE IF NOT EXISTS notification_preferences (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    project_updates BOOLEAN NOT NULL DEFAULT TRUE,
+    payment_alerts BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

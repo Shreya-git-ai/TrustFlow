@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from app.observability import log_event
 from app.security import SESSION_COOKIE, allowed_origins, get_current_user, require_csrf, set_session_cookie
 from app.services import auth
+from app.services import paypal_onboarding
 from app.services.email import email_delivery_configured, send_password_reset_email, send_verification_email
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -40,6 +41,13 @@ class PasswordResetBody(BaseModel):
     password: str = Field(min_length=12, max_length=128)
 
 
+class PayPalOnboardingCompleteBody(BaseModel):
+    tracking_id: str = Field(min_length=16, max_length=64)
+    merchant_id: str = Field(min_length=3, max_length=64)
+    permissions_granted: bool
+    consent_status: bool
+
+
 def _normalize_email(value: str) -> str:
     email = value.strip().lower()
     if not EMAIL_RE.fullmatch(email):
@@ -67,7 +75,7 @@ def signup(body: SignupBody, request: Request, response: Response) -> dict:
     if not body.name.strip():
         raise HTTPException(status_code=422, detail="Name cannot be blank")
     email = _normalize_email(body.email)
-    if _auth_email_delivery_configured():
+    if email_delivery_configured():
         try:
             user, verification_token = auth.create_pending_user(email, body.name.strip(), body.password, body.role)
         except Exception as error:
@@ -108,7 +116,7 @@ def verify_email(body: VerifyEmailBody, request: Request) -> dict:
 def resend_verification(body: EmailBody, request: Request) -> dict:
     _check_origin(request)
     email = _normalize_email(body.email)
-    token_data = auth.create_verification_token(email) if _auth_email_delivery_configured() else None
+    token_data = auth.create_verification_token(email) if email_delivery_configured() else None
     if token_data:
         name, token = token_data
         try:
@@ -163,6 +171,24 @@ def login(body: LoginBody, request: Request, response: Response) -> dict:
 @router.get("/me")
 def current_user(user: dict = Depends(get_current_user)) -> dict:
     return {"user": {key: value for key, value in user.items() if key != "csrf_token"}, "csrf_token": user["csrf_token"]}
+
+
+@router.post("/paypal/onboarding")
+async def paypal_onboarding_start(user: dict = Depends(require_csrf)) -> dict:
+    try:
+        return await paypal_onboarding.start(user)
+    except paypal_onboarding.DomainError as error:
+        raise HTTPException(error.status_code, error.detail) from error
+
+
+@router.post("/paypal/onboarding/complete")
+async def paypal_onboarding_complete(body: PayPalOnboardingCompleteBody, user: dict = Depends(require_csrf)) -> dict:
+    try:
+        return await paypal_onboarding.complete(
+            user, body.tracking_id, body.merchant_id, body.permissions_granted, body.consent_status,
+        )
+    except paypal_onboarding.DomainError as error:
+        raise HTTPException(error.status_code, error.detail) from error
 
 
 @router.post("/logout")

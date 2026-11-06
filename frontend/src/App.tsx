@@ -1,14 +1,15 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
-  acceptProject, assessMilestone, authorizePayment, capturePayment, createMilestone, evidenceFileUrl,
-  createPaymentOrder, createProject, currentUser, decideMilestone, decideRefundProposal, getAudit, getMilestone, getPayments, getRefundProposals, getWorkspaceActivity,
+  acceptProject, declineProject, cancelProjectInvitation, resendProjectInvitation,
+  assessMilestone, authorizePayment, capturePayment, createMilestone, evidenceFileUrl,
+  createPaymentOrder, createProject, currentUser, completePaypalOnboarding, startPaypalOnboarding, getNotificationPreferences, updateNotificationPreferences, decideMilestone, decideMilestoneAgreement, decideRefundProposal, getAudit, getMilestone, getPayments, getRefundProposals, getWorkspaceActivity, getNotifications, markNotificationsRead as saveNotificationReads,
   getProject, getProjects, login, logout, reconcilePayment, requestPasswordReset, resendVerification, resetPassword, signup, submitEvidence,
   updateAccount, updateMilestone, verifyEmail,
-  type AssessmentResponse, type Milestone, type Project, type RefundProposal, type User, type WorkspaceActivity, type WorkspacePayment,
+  type AssessmentResponse, type Milestone, type Project, type RefundProposal, type User, type WorkspaceActivity, type WorkspaceNotification, type WorkspacePayment,
 } from './api/assessment'
 import NotificationCenter from './components/audit/NotificationCenter'
 import NotificationPreferencesCard from './components/audit/NotificationPreferences'
-import { buildNotifications, defaultNotificationPreferences, savedNotificationPreferences, type NotificationPreferences, type WorkspaceNotification } from './components/audit/notificationData'
+import { defaultNotificationPreferences, savedNotificationPreferences, notificationsForPreferences, notificationDestination, type NotificationPreferences } from './components/audit/notificationData'
 import RecentActivity from './components/audit/RecentActivity'
 import PaymentsPage from './components/payments/PaymentsPage'
 import InsightsPage from './pages/InsightsPage'
@@ -20,18 +21,10 @@ type AuthMode = 'login' | 'signup'
 type WorkspaceSection = 'overview' | 'payments' | 'insights' | 'resources' | 'team'
 const ProjectsGrid = lazy(() => import('./components/dashboard/ProjectsGrid'))
 
-function savedNotificationIds(userId: string) {
-  try {
-    const saved = JSON.parse(window.localStorage.getItem(`trustflow.notifications.read.${userId}`) || '[]')
-    return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === 'string') : []
-  } catch {
-    return []
-  }
-}
-
 function App() {
   const [user, setUser] = useState<User | null>(null)
-  const [authMode, setAuthMode] = useState<AuthMode>('login')
+  const invitationEmail = new URLSearchParams(window.location.search).get('email') || ''
+  const [authMode, setAuthMode] = useState<AuthMode>(() => new URLSearchParams(window.location.search).get('signup') === 'freelancer' ? 'signup' : 'login')
   const [projects, setProjects] = useState<Project[]>([])
   const [project, setProject] = useState<Project | null>(null)
   const [milestone, setMilestone] = useState<Milestone | null>(null)
@@ -61,7 +54,7 @@ function App() {
     try { return JSON.parse(window.localStorage.getItem('trustflow.sidebar.collapsed') || 'false') === true } catch { return false }
   })
   const [notificationsOpen, setNotificationsOpen] = useState(false)
-  const [notificationsRead, setNotificationsRead] = useState<string[]>([])
+  const [notifications, setNotifications] = useState<WorkspaceNotification[]>([])
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(defaultNotificationPreferences)
   const [searchQuery, setSearchQuery] = useState('')
   const accountMenuRef = useRef<HTMLDivElement | null>(null)
@@ -83,6 +76,9 @@ function App() {
     } finally {
       setActivityLoading(false)
     }
+  }, [])
+  const loadNotifications = useCallback(async () => {
+    try { setNotifications(await getNotifications()) } catch { /* the workspace remains usable if the inbox is unavailable */ }
   }, [])
   const loadPayments = useCallback(async () => {
     setPaymentsLoading(true)
@@ -117,6 +113,35 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!user || window.location.pathname !== '/paypal-onboarding-return') return
+    const params = new URLSearchParams(window.location.search)
+    const trackingId = params.get('merchantId') || ''
+    const merchantId = params.get('merchantIdInPayPal') || ''
+    let active = true
+    async function finishPaypalOnboarding() {
+      try {
+        await completePaypalOnboarding({
+          tracking_id: trackingId,
+          merchant_id: merchantId,
+          permissions_granted: params.get('permissionsGranted') === 'true',
+          consent_status: params.get('consentStatus') === 'true',
+        })
+        const response = await currentUser()
+        if (!active) return
+        setUser(response.user)
+        setSettingsOpen(true)
+        setNotice('Your PayPal receiving account is connected and ready for milestone payments.')
+      } catch (reason) {
+        if (active) setError(reason instanceof Error ? reason.message : 'PayPal onboarding could not be confirmed.')
+      } finally {
+        if (active) window.history.replaceState({}, '', '/')
+      }
+    }
+    void finishPaypalOnboarding()
+    return () => { active = false }
+  }, [user])
+
+  useEffect(() => {
     function focusSearch(event: KeyboardEvent) {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k') return
       const input = document.querySelector<HTMLInputElement>('.topbar-search input')
@@ -136,8 +161,10 @@ function App() {
         const response = await currentUser()
         if (!active) return
         setUser(response.user)
-        setNotificationsRead(savedNotificationIds(response.user.id))
-        setNotificationPreferences(savedNotificationPreferences(response.user.id))
+        try {
+          const preferences = await getNotificationPreferences()
+          setNotificationPreferences({ projectUpdates: preferences.project_updates, paymentAlerts: preferences.payment_alerts })
+        } catch { setNotificationPreferences(savedNotificationPreferences(response.user.id)) }
 
         // Project loading is independent from authentication. A project API
         // failure should not incorrectly sign out an otherwise valid session.
@@ -148,6 +175,7 @@ function App() {
           if (active) setError(e instanceof Error ? e.message : 'Could not load projects.')
         }
         if (active) void loadActivity()
+        if (active) void loadNotifications()
       } catch (e) {
         if (!active) return
         setUser(null)
@@ -159,7 +187,21 @@ function App() {
 
     void initialize()
     return () => { active = false }
-  }, [loadActivity])
+  }, [loadActivity, loadNotifications])
+
+  useEffect(() => {
+    if (!user) return
+    void loadNotifications()
+    const refresh = () => { if (document.visibilityState === 'visible') void loadNotifications() }
+    const timer = window.setInterval(refresh, 30_000)
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [user, loadNotifications])
 
   useEffect(() => {
     if (!user) return
@@ -321,23 +363,29 @@ function App() {
     if (section === 'payments') void loadPayments()
   }
 
-  function markNotificationsRead(ids: string[]) {
-    if (!user) return
-    const next = [...new Set([...notificationsRead, ...ids])]
-    setNotificationsRead(next)
-    try { window.localStorage.setItem(`trustflow.notifications.read.${user.id}`, JSON.stringify(next)) } catch { /* read state remains available for this session */ }
+  async function markNotificationsRead(ids: number[]) {
+    if (!user || !ids.length) return
+    await saveNotificationReads(ids)
+    await loadNotifications()
   }
 
   function saveNotificationPreferences(preferences: NotificationPreferences) {
     setNotificationPreferences(preferences)
     if (!user) return
     try { window.localStorage.setItem(`trustflow.notifications.preferences.${user.id}`, JSON.stringify(preferences)) } catch { /* preferences remain active for this session */ }
+    void updateNotificationPreferences({ project_updates: preferences.projectUpdates, payment_alerts: preferences.paymentAlerts })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : 'Notification preferences could not be saved.'))
   }
 
   function openNotification(item: WorkspaceNotification) {
-    markNotificationsRead([item.id])
-    if (item.destination === 'payments') navigateSection('payments')
-    else if (item.projectId) void openProject(item.projectId)
+    void markNotificationsRead([item.event_id])
+    if (notificationDestination(item) === 'payments') navigateSection('payments')
+    else void run(async () => {
+      const selected = await getProject(item.project_id)
+      const selectedMilestone = item.milestone_id ? await getMilestone(item.milestone_id) : null
+      setSettingsOpen(false); setActiveSection('overview')
+      setProject(selected); setMilestone(selectedMilestone); setAudit(await getAudit(item.project_id))
+    })
     setNotificationsOpen(false)
   }
 
@@ -367,10 +415,13 @@ function App() {
           return
         }
         setUser(response.user)
-        setNotificationsRead(savedNotificationIds(response.user.id))
-        setNotificationPreferences(savedNotificationPreferences(response.user.id))
+        try {
+          const preferences = await getNotificationPreferences()
+          setNotificationPreferences({ projectUpdates: preferences.project_updates, paymentAlerts: preferences.payment_alerts })
+        } catch { setNotificationPreferences(savedNotificationPreferences(response.user.id)) }
         setProjects(await getProjects())
         void loadActivity()
+        void loadNotifications()
         setNotice('Account created. Email confirmation is disabled in this development environment.')
       } else {
         const email = String(values.get('email'))
@@ -386,10 +437,13 @@ function App() {
           throw error
         }
         setUser(response.user)
-        setNotificationsRead(savedNotificationIds(response.user.id))
-        setNotificationPreferences(savedNotificationPreferences(response.user.id))
+        try {
+          const preferences = await getNotificationPreferences()
+          setNotificationPreferences({ projectUpdates: preferences.project_updates, paymentAlerts: preferences.payment_alerts })
+        } catch { setNotificationPreferences(savedNotificationPreferences(response.user.id)) }
         setProjects(await getProjects())
         void loadActivity()
+        void loadNotifications()
       }
     })
   }
@@ -411,19 +465,32 @@ function App() {
   }
 
   async function signOut() {
-    await run(async () => { await logout(); setUser(null); setNotificationsRead([]); setProject(null); setMilestone(null); setProjects([]); setActivity([]); setPayments([]); setRefundProposals([]); setSettingsOpen(false); setActiveSection('overview') })
+    await run(async () => { await logout(); setUser(null); setNotifications([]); setProject(null); setMilestone(null); setProjects([]); setActivity([]); setPayments([]); setRefundProposals([]); setSettingsOpen(false); setActiveSection('overview') })
+  }
+
+  async function connectPaypalAccount() {
+    await run(async () => {
+      const referral = await startPaypalOnboarding()
+      if (referral.connected) {
+        const response = await currentUser()
+        setUser(response.user)
+        setNotice('Your PayPal receiving account is already connected.')
+        return
+      }
+      if (!referral.approval_url) throw new Error('PayPal did not return a seller onboarding link.')
+      window.location.assign(referral.approval_url)
+    })
   }
 
   if (window.location.pathname === '/verify-email') return <EmailVerificationPage status={verificationStatus || 'checking'} onResend={resendConfirmation} busy={busy} error={error} />
   if (window.location.pathname === '/forgot-password') return <ForgotPasswordPage />
   if (window.location.pathname === '/reset-password') return <ResetPasswordPage />
   if (pendingVerificationEmail) return <VerificationPending email={pendingVerificationEmail} message={pendingVerificationMessage} busy={busy} error={error} onResend={resendConfirmation} onBack={() => { setPendingVerificationEmail(''); setAuthMode('login'); setError('') }} />
-  if (!['/', '/payment-return', '/payment-cancel'].includes(window.location.pathname)) return <main className="not-found-page"><section className="surface"><span className="eyebrow">404 · PAGE NOT FOUND</span><h1>We couldn’t find that page.</h1><p>Use your workspace navigation to return to a project.</p><a className="primary-button link-button" href="/">Go to TrustFlow</a></section></main>
+  if (!['/', '/payment-return', '/payment-cancel', '/paypal-onboarding-return'].includes(window.location.pathname)) return <main className="not-found-page"><section className="surface"><span className="eyebrow">404 · PAGE NOT FOUND</span><h1>We couldn’t find that page.</h1><p>Use your workspace navigation to return to a project.</p><a className="primary-button link-button" href="/">Go to TrustFlow</a></section></main>
   if (initializing) return <main className="app-loading" role="status" aria-live="polite"><span className="verification-spinner" aria-hidden="true"/><p>Loading TrustFlow…</p></main>
-  if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onSubmit={handleAuth} busy={busy} error={error} />
+  if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onSubmit={handleAuth} busy={busy} error={error} initialEmail={invitationEmail} />
 
   const activePayments = projects.reduce((sum, item) => sum + (item.active_payment_count || 0), 0)
-  const notificationItems = buildNotifications(projects, user.role, notificationPreferences)
   const sectionTitle = activeSection === 'payments' ? 'Payments' : activeSection === 'insights' ? 'Insights' : activeSection === 'resources' ? 'Resources' : activeSection === 'team' ? 'Team Directory' : 'Overview'
 
   return <div className="app-shell" data-sidebar={sidebarCollapsed ? 'collapsed' : 'expanded'}>
@@ -456,7 +523,7 @@ function App() {
         </div>
         <div className="topbar-actions">
           <div className="paypal-header-lockup topbar-paypal" aria-label="Powered by PayPal"><span className="powered-copy"><span className="powered-by">POWERED BY</span><img className="paypal-logo" src="/paypal-logo.svg" alt="PayPal"/></span></div>
-          <div ref={notificationsRef}><NotificationCenter projects={projects} role={user.role} preferences={notificationPreferences} open={notificationsOpen} readIds={notificationsRead} onToggle={() => { setNotificationsOpen((open) => !open); setAccountMenuOpen(false) }} onMarkAllRead={() => markNotificationsRead(notificationItems.map((item) => item.id))} onSelect={openNotification}/></div>
+          <div ref={notificationsRef}><NotificationCenter notifications={notifications} preferences={notificationPreferences} open={notificationsOpen} onToggle={() => { setNotificationsOpen((open) => !open); setAccountMenuOpen(false) }} onMarkAllRead={(ids) => void markNotificationsRead(ids)} onSelect={openNotification}/></div>
           <div className="account-menu-wrap" ref={accountMenuRef}>
             <button className={`account-trigger ${accountMenuOpen ? 'is-open' : ''}`} aria-label="Open account menu" aria-haspopup="menu" aria-expanded={accountMenuOpen} onClick={() => { setAccountMenuOpen((open) => !open); setNotificationsOpen(false) }}>
               <span className="account-trigger-avatar">{user.name.trim().slice(0, 1).toUpperCase()}</span><span className="account-trigger-copy"><strong>{user.name}</strong><small>{user.role === 'client' ? 'Client account' : 'Freelancer account'}</small></span><span className="account-chevron" aria-hidden="true">⌄</span>
@@ -476,13 +543,14 @@ function App() {
       <div className={`content ${!project && !settingsOpen && activeSection === 'overview' ? 'overview-content' : ''}`}>
         {error && <div role="alert" className="alert error-alert"><strong>Could not complete that action.</strong> {error}<button onClick={() => setError('')} aria-label="Dismiss">×</button></div>}
         {notice && <div role="status" className="alert success-alert">{notice}<button onClick={() => setNotice('')} aria-label="Dismiss">×</button></div>}
-        {!project && settingsOpen && <SettingsPage user={user} busy={busy} notificationPreferences={notificationPreferences} onPreferenceChange={saveNotificationPreferences} onSave={(data) => void run(async () => { const response = await updateAccount(data); setUser(response.user); setNotice('Account settings saved. Your session was rotated.') })} />}
+        {!project && settingsOpen && <SettingsPage user={user} busy={busy} notificationPreferences={notificationPreferences} onPreferenceChange={saveNotificationPreferences} onConnectPaypal={() => void connectPaypalAccount()} onSave={(data) => void run(async () => { const response = await updateAccount(data); setUser(response.user); setNotice('Account settings saved. Your session was rotated.') })} />}
         {!project && !settingsOpen && activeSection === 'overview' && <Dashboard
           user={user} projects={projects} busy={busy} searchQuery={searchQuery} activity={activity}
           activityLoading={activityLoading} activityError={activityError} onOpen={openProject} onEditProject={editProjectMilestone} onClearSearch={() => setSearchQuery('')}
           onOpenInsights={() => navigateSection('insights')} onOpenResources={() => navigateSection('resources')} onOpenActivity={openWorkspaceActivity}
-          onAccept={(id) => void run(async () => { await acceptProject(id); await loadProjects(); await loadActivity(); setNotice('Project invitation accepted.') })}
-          onCreate={(data) => run(async () => { await createProject(data); await loadProjects(); await loadActivity(); setNotice('Project created. The freelancer can accept the invitation from their workspace. Email delivery depends on SMTP or a Zapier email action.') })}
+          onAccept={(id) => void run(async () => { await acceptProject(id); await loadProjects(); await loadActivity(); await loadNotifications(); setNotice('Project invitation accepted.') })}
+          onDecline={(id) => { if (window.confirm('Decline this project invitation?')) void run(async () => { await declineProject(id); await loadProjects(); await loadActivity(); await loadNotifications(); setNotice('Project invitation declined.') }) }}
+          onCreate={(data) => run(async () => { await createProject(data); await loadProjects(); await loadActivity(); await loadNotifications(); setNotice('Project created. The freelancer can sign up or sign in with the invited email to review it. Invitation email depends on SMTP or Zapier setup.') })}
         />}
         {!project && !settingsOpen && activeSection === 'payments' && <PaymentsPage
           payments={payments} paymentsLoading={paymentsLoading} paymentsError={paymentsError}
@@ -499,6 +567,7 @@ function App() {
           milestone={milestone} project={project} user={user} busy={busy} audit={audit}
           onBack={() => setMilestone(null)} onRefresh={() => void run(refreshSelected)}
           onUpdate={(data) => run(async () => { await updateMilestone(project.id, milestone.id, data); await refreshSelected(); setNotice('Milestone terms updated.') })}
+          onAgreement={(decision, note) => void run(async () => { await decideMilestoneAgreement(milestone.id, decision, note); await refreshSelected(); await loadNotifications(); setNotice(decision === 'accepted' ? 'Milestone terms accepted. Evidence submission is now available.' : 'Changes requested. The client can update the milestone terms.') })}
           onEvidence={(description, links, file) => run(async () => { await submitEvidence(milestone.id, description, links, file); await refreshSelected(); setNotice('Evidence revision submitted. A client can now request an assessment.') })}
           onAssess={() => void run(async () => { const report = await assessMilestone(milestone.id); await refreshSelected(); setNotice(report.stale ? 'Assessment saved, but the evidence changed while it was running. Review the latest revision.' : 'Assessment report saved to project history.') })}
           onDecision={(decision, note) => void run(async () => { await decideMilestone(milestone.id, decision, note); await refreshSelected(); setNotice(decision === 'approved' ? 'Milestone approved by the client.' : decision === 'revoked' ? 'Approval revoked.' : 'Revision requested.') })}
@@ -507,7 +576,12 @@ function App() {
           onCapture={() => void run(async () => { if (!window.confirm('Capture the authorized milestone amount from PayPal?')) return; const result = await capturePayment(milestone.id); await refreshSelected(); setNotice(result.status === 'captured' ? 'PayPal confirmed the capture.' : 'Capture is pending. TrustFlow will not submit another capture until PayPal is reconciled.') })}
           onReconcile={() => void run(async () => { const result = await reconcilePayment(milestone.id); await refreshSelected(); setNotice(result.status === 'captured' ? 'PayPal confirmed the capture.' : 'PayPal still has no completed capture to report.') })}
         />}
-        {project && !milestone && <ProjectPage project={project} user={user} busy={busy} onBack={() => { setProject(null); setMilestone(null) }} onSelect={selectMilestone} onCreateMilestone={(data) => run(async () => { await createMilestone(project.id, data); await refreshSelected(); setNotice('Milestone added to the project.') })}/>}
+        {project && !milestone && <ProjectPage project={project} user={user} busy={busy} onBack={() => { setProject(null); setMilestone(null) }} onSelect={selectMilestone}
+          onAcceptInvitation={() => void run(async () => { await acceptProject(project.id); await refreshSelected(); await loadProjects(); await loadActivity(); await loadNotifications(); setNotice('Project invitation accepted.') })}
+          onDeclineInvitation={() => { if (window.confirm('Decline this project invitation?')) void run(async () => { await declineProject(project.id); await refreshSelected(); await loadProjects(); await loadActivity(); await loadNotifications(); setNotice('Project invitation declined.') }) }}
+          onCancelInvitation={() => { if (window.confirm('Cancel this pending invitation? The project will be marked cancelled.')) void run(async () => { await cancelProjectInvitation(project.id); await refreshSelected(); await loadProjects(); await loadActivity(); await loadNotifications(); setNotice('Project invitation cancelled.') }) }}
+          onResendInvitation={() => void run(async () => { await resendProjectInvitation(project.id); await loadActivity(); await loadNotifications(); setNotice('Invitation resent. Delivery depends on your email integration.') })}
+          onCreateMilestone={(data) => run(async () => { await createMilestone(project.id, data); await refreshSelected(); await loadNotifications(); setNotice('Milestone terms proposed. The freelancer must accept them before work begins.') })}/>}
       </div>
     </main>
   </div>
@@ -533,9 +607,10 @@ function PasswordField({
   </label>
 }
 
-function AuthScreen({ mode, setMode, onSubmit, busy, error }: {
+function AuthScreen({ mode, setMode, onSubmit, busy, error, initialEmail = '' }: {
   mode: AuthMode; setMode: (value: AuthMode) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; error: string
+  initialEmail?: string
 }) {
   return <main className="auth-layout auth-enter">
     <section className="auth-story">
@@ -546,8 +621,8 @@ function AuthScreen({ mode, setMode, onSubmit, busy, error }: {
     <section className="auth-panel"><div className="auth-card">
       <div className="auth-heading"><span className="eyebrow">YOUR WORKSPACE</span><h2>{mode === 'login' ? 'Welcome back' : 'Create your account'}</h2><p>{mode === 'login' ? 'Sign in to continue to your projects.' : 'Set up an account as a client or freelancer.'}</p></div>
       <form onSubmit={onSubmit} className="stack-form">
-        {mode === 'signup' && <><label>Name<input name="name" autoComplete="name" required maxLength={100} /></label><label>Account role<select name="role" defaultValue="client"><option value="client">Client</option><option value="freelancer">Freelancer</option></select></label></>}
-        <label>Email<input name="email" type="email" autoComplete="email" required maxLength={254} /></label>
+        {mode === 'signup' && <><label>Name<input name="name" autoComplete="name" required maxLength={100} /></label><label>Account role<select name="role" defaultValue={initialEmail ? 'freelancer' : 'client'} disabled={!!initialEmail}><option value="client">Client</option><option value="freelancer">Freelancer</option></select>{initialEmail && <small>Project invitations require a freelancer account.</small>}</label></>}
+        <label>Email<input name="email" type="email" autoComplete="email" defaultValue={initialEmail} readOnly={mode === 'signup' && !!initialEmail} required maxLength={254} />{mode === 'signup' && initialEmail && <small>Use the invited address to attach this account to the project.</small>}</label>
         <PasswordField label="Password" name="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} required minLength={mode === 'signup' ? 12 : 1} hint={mode === 'signup' ? 'Use at least 12 characters.' : undefined}/>
         {error && <p className="inline-error" role="alert">{error}</p>}
         <button className="primary-button full-button" disabled={busy}>{busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}<span>→</span></button>
@@ -667,11 +742,11 @@ function ResetPasswordPage() {
   </section></main>
 }
 
-function Dashboard({ user, projects, busy, searchQuery, activity, activityLoading, activityError, onOpen, onEditProject, onClearSearch, onOpenInsights, onOpenResources, onOpenActivity, onAccept, onCreate }: {
+function Dashboard({ user, projects, busy, searchQuery, activity, activityLoading, activityError, onOpen, onEditProject, onClearSearch, onOpenInsights, onOpenResources, onOpenActivity, onAccept, onDecline, onCreate }: {
   user: User; projects: Project[]; busy: boolean; searchQuery: string; activity: WorkspaceActivity[]
   activityLoading: boolean; activityError: string; onOpen: (id: string) => void; onEditProject: (id: string) => void; onClearSearch: () => void
   onOpenInsights: () => void; onOpenResources: () => void; onOpenActivity: (item: WorkspaceActivity) => void
-  onAccept: (id: string) => void
+  onAccept: (id: string) => void; onDecline: (id: string) => void
   onCreate: (data: { title: string; description: string; currency: string; freelancer_email: string }) => Promise<boolean>
 }) {
   const [projectFilter, setProjectFilter] = useState<'all' | 'active' | 'invited'>('all')
@@ -789,7 +864,7 @@ function Dashboard({ user, projects, busy, searchQuery, activity, activityLoadin
         <label className="project-sort-control">Sort by<select aria-label="Sort projects" value={sortBy} onChange={(event) => setSortBy(event.target.value as 'recent' | 'name' | 'attention')}><option value="recent">Recently updated</option><option value="attention">Needs attention</option><option value="name">Project name</option></select></label>
       </div></div>
       </div>
-      {projects.length === 0 ? <div className="projects-empty-new"><span className="empty-illustration"><i>◇</i><b>＋</b></span><h3>Your next collaboration starts here.</h3><p>{user.role === 'client' ? 'Create a project, set expectations, and invite a freelancer using their registered email.' : 'When a client invites you to a project, it will appear here with the agreed scope and next steps.'}</p>{user.role === 'client' && <button type="button" className="secondary-button" onClick={() => document.getElementById('create-project-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>Create your first project <span>→</span></button>}</div> : filteredProjects.length === 0 ? <div className="projects-empty-new compact"><span className="empty-illustration"><i>⌕</i></span><h3>No projects match these filters</h3><p>Clear the search or adjust the project filters to see your collaborations.</p><button type="button" className="text-button" onClick={() => { setProjectFilter('all'); setAttentionOnly(false); onClearSearch() }}>Clear filters</button></div> : <Suspense fallback={<div className="projects-grid-loading" role="status">Loading projects…</div>}><ProjectsGrid projects={filteredProjects} activity={activity} role={user.role} busy={busy} onOpen={onOpen} onEdit={onEditProject} onAccept={onAccept} onClearFilters={() => { setProjectFilter('all'); setAttentionOnly(false); onClearSearch() }}/></Suspense>}
+      {projects.length === 0 ? <div className="projects-empty-new"><span className="empty-illustration"><i>◇</i><b>＋</b></span><h3>Your next collaboration starts here.</h3><p>{user.role === 'client' ? 'Create a project and invite a freelancer by email. New freelancers can sign up from the invitation.' : 'When a client invites you to a project, it will appear here with the scope and next steps.'}</p>{user.role === 'client' && <button type="button" className="secondary-button" onClick={() => document.getElementById('create-project-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>Create your first project <span>→</span></button>}</div> : filteredProjects.length === 0 ? <div className="projects-empty-new compact"><span className="empty-illustration"><i>⌕</i></span><h3>No projects match these filters</h3><p>Clear the search or adjust the project filters to see your collaborations.</p><button type="button" className="text-button" onClick={() => { setProjectFilter('all'); setAttentionOnly(false); onClearSearch() }}>Clear filters</button></div> : <Suspense fallback={<div className="projects-grid-loading" role="status">Loading projects…</div>}><ProjectsGrid projects={filteredProjects} activity={activity} role={user.role} busy={busy} onOpen={onOpen} onEdit={onEditProject} onAccept={onAccept} onDecline={onDecline} onClearFilters={() => { setProjectFilter('all'); setAttentionOnly(false); onClearSearch() }}/></Suspense>}
     </section>
     <div className="dashboard-lower-grid">
       <RecentActivity activity={activity} loading={activityLoading} error={activityError} onOpenActivity={onOpenActivity} onViewAll={onOpenInsights}/>
@@ -814,9 +889,10 @@ function Dashboard({ user, projects, busy, searchQuery, activity, activityLoadin
   </>
 }
 
-function SettingsPage({ user, busy, notificationPreferences, onPreferenceChange, onSave }: {
+function SettingsPage({ user, busy, notificationPreferences, onPreferenceChange, onConnectPaypal, onSave }: {
   user: User; busy: boolean; notificationPreferences: NotificationPreferences
   onPreferenceChange: (preferences: NotificationPreferences) => void
+  onConnectPaypal: () => void
   onSave: (data: { name: string; current_password: string; new_password?: string }) => void
 }) {
   const [passwordError, setPasswordError] = useState('')
@@ -838,6 +914,7 @@ function SettingsPage({ user, busy, notificationPreferences, onPreferenceChange,
       <aside className="settings-side-stack">
         <section className="surface settings-identity-card"><div className="settings-cover-art"><span className="cover-orbit cover-orbit-a"/><span className="cover-orbit cover-orbit-b"/><span className="cover-monogram">{user.name.trim().slice(0, 1).toUpperCase()}</span><span className="cover-role-label">{user.role === 'client' ? 'CLIENT' : 'FREELANCER'}</span></div><div className="settings-identity-body"><span className="eyebrow">ACCOUNT IDENTITY</span><h2>{user.name}</h2><p>{user.email}</p><div className={`identity-verification ${user.email_verified ? 'verified' : 'pending'}`}><i/>{user.email_verified ? 'Email verified' : 'Email confirmation pending'}</div><div className="identity-facts"><div><span>ROLE</span><strong>{user.role === 'client' ? 'Client' : 'Freelancer'}</strong></div><div><span>WORKSPACE</span><strong>{user.role === 'client' ? 'Client studio' : 'Freelancer desk'}</strong></div></div></div></section>
         <section className="surface settings-security-card"><div className="settings-side-head"><span className="settings-side-icon green">✓</span><div><span className="eyebrow">SECURITY STATUS</span><h3>{user.email_verified ? 'Email confirmed' : 'One step left'}</h3></div></div><p>{user.email_verified ? 'Your account email is confirmed. Keep using a unique password and avoid sharing access.' : 'Confirm your email address to complete the account verification step.'}</p><div className="security-check-row"><span><i className={user.email_verified ? 'ok' : 'waiting'}/>Email confirmation</span><strong>{user.email_verified ? 'Complete' : 'Pending'}</strong></div><div className="security-check-row"><span><i className="ok"/>Authenticated session</span><strong>Active</strong></div><div className="security-check-row"><span><i className="ok"/>Password recovery</span><strong>Email link</strong></div></section>
+        {user.role === 'freelancer' && <section className="surface settings-security-card paypal-connect-card"><div className="settings-side-head"><span className="settings-side-icon blue">$</span><div><span className="eyebrow">PAYMENT SETUP</span><h3>PayPal receiving account</h3></div></div><p>Connect your PayPal account so clients can authorize milestone payments and settle captured funds to you.</p><div className="security-check-row"><span><i className={user.paypal_merchant_id ? 'ok' : 'waiting'}/>Seller onboarding</span><strong>{user.paypal_merchant_id ? 'Connected' : 'Required'}</strong></div>{user.paypal_merchant_id ? <small>PayPal account ending in {user.paypal_merchant_id.slice(-4)} is connected.</small> : <button type="button" className="primary-button" disabled={busy} onClick={onConnectPaypal}>Connect PayPal account <span>→</span></button>}</section>}
         <NotificationPreferencesCard preferences={notificationPreferences} onChange={onPreferenceChange}/>
       </aside>
     </div>
@@ -858,12 +935,19 @@ function CreateProjectForm({ busy, onCreate }: { busy: boolean; onCreate: (data:
     if (succeeded) form.reset()
   }
 
-  return <section id="create-project-form" className="surface create-card"><div className="section-head"><div><span className="eyebrow">INVITE A FREELANCER</span><h2>Create New Project</h2></div><span className="create-card-icon" aria-hidden="true">＋</span></div><form className="stack-form compact-form create-project-compact" onSubmit={(event) => void submit(event)}><label>Project name<input name="title" required maxLength={160} placeholder="Website redesign"/></label><div className="create-project-invite-row"><label>Freelancer account email<input name="freelancer_email" type="email" required maxLength={254} placeholder="name@example.com"/></label><button className="primary-button" disabled={busy}>New Project <span>→</span></button></div></form></section>
+  return <section id="create-project-form" className="surface create-card"><div className="section-head"><div><span className="eyebrow">INVITE A FREELANCER</span><h2>Create New Project</h2></div><span className="create-card-icon" aria-hidden="true">＋</span></div><form className="stack-form compact-form create-project-compact" onSubmit={(event) => void submit(event)}><label>Project name<input name="title" required maxLength={160} placeholder="Website redesign"/></label><label>Project description<textarea name="description" rows={3} maxLength={5000} placeholder="A short overview of the work and intended outcome."/></label><div className="create-project-invite-row"><label>Freelancer email<input name="freelancer_email" type="email" required maxLength={254} placeholder="name@example.com"/><small>They can create a freelancer account with this address if they are new to TrustFlow.</small></label><label>Project currency<input name="currency" defaultValue="USD" minLength={3} maxLength={3} pattern="[A-Za-z]{3}" required aria-label="Project currency"/></label><button className="primary-button" disabled={busy}>Create project <span>→</span></button></div></form></section>
 }
 
-function ProjectPage({ project, user, busy, onBack, onSelect, onCreateMilestone }: { project: Project; user: User; busy: boolean; onBack: () => void; onSelect: (id: string) => void; onCreateMilestone: (data: { title: string; acceptance_criteria: string[]; amount: string; currency: string; due_at?: string }) => Promise<boolean> }) {
-  return <><button className="back-button" onClick={onBack}>← All projects</button><div className="page-heading project-title-heading"><div><span className="eyebrow">PROJECT · {project.membership_status.toUpperCase()}</span><h1>{project.title}</h1><p>{project.description || 'Milestones, evidence, and decisions for this collaboration.'}</p></div><div className="project-people"><span className="person-dot">{project.client_name?.slice(0,1)}</span><span>{project.client_name} <small>Client</small></span><span className="person-dot secondary-person">{project.freelancer_name?.slice(0,1)}</span><span>{project.freelancer_name} <small>Freelancer</small></span></div></div>
-    <div className="project-layout"><section className="surface"><div className="section-head"><div><span className="eyebrow">AGREED WORK</span><h2>Milestones</h2></div><span className="subtle-count">{project.milestones?.length || 0} total</span></div>{project.membership_status === 'invited' && <div className="notice-box">The freelancer has not accepted the invitation. Milestone evidence is unavailable until they accept.</div>}{!project.milestones?.length ? <div className="empty-state"><span>◇</span><h3>No milestones added</h3><p>The client can define the deliverable, criteria, amount, and due date here.</p></div> : <div className="milestone-list">{project.milestones.map((item) => <button className="milestone-row" key={item.id} onClick={() => onSelect(item.id)}><span className="milestone-number">{item.title.slice(0,1).toUpperCase()}</span><span className="milestone-info"><strong>{item.title}</strong><small>{item.acceptance_criteria.length} criteria · revision {item.evidence_revision}</small></span><span className={`status-chip status-${item.status}`}>{item.status.replaceAll('_', ' ')}</span><span className="milestone-amount">{item.currency} {item.amount}</span><span className="row-arrow">→</span></button>)}</div>}</section>{user.role === 'client' && <CreateMilestoneForm project={project} busy={busy} onCreate={onCreateMilestone}/>}</div>
+function ProjectPage({ project, user, busy, onBack, onSelect, onCreateMilestone, onAcceptInvitation, onDeclineInvitation, onCancelInvitation, onResendInvitation }: {
+  project: Project; user: User; busy: boolean; onBack: () => void; onSelect: (id: string) => void
+  onCreateMilestone: (data: { title: string; acceptance_criteria: string[]; amount: string; currency: string; due_at?: string }) => Promise<boolean>
+  onAcceptInvitation: () => void; onDeclineInvitation: () => void; onCancelInvitation: () => void; onResendInvitation: () => void
+}) {
+  return <><button className="back-button" onClick={onBack}>← All projects</button><div className="page-heading project-title-heading"><div><span className="eyebrow">PROJECT · {project.status === 'cancelled' ? 'CANCELLED' : project.membership_status.toUpperCase()}</span><h1>{project.title}</h1><p>{project.description || 'Milestones, evidence, and decisions for this collaboration.'}</p></div><div className="project-people"><span className="person-dot">{project.client_name?.slice(0,1)}</span><span>{project.client_name} <small>Client</small></span><span className="person-dot secondary-person">{project.freelancer_name?.slice(0,1)}</span><span>{project.freelancer_name || project.invited_email} <small>Freelancer</small></span></div></div>
+    {project.membership_status === 'invited' && user.role === 'freelancer' && <section className="surface project-invitation-actions"><div><strong>Review this collaboration</strong><p>Accept to join the project, or decline the invitation.</p></div><button type="button" className="primary-button" disabled={busy} onClick={onAcceptInvitation}>Accept invitation <span>✓</span></button><button type="button" className="secondary-button" disabled={busy} onClick={onDeclineInvitation}>Decline</button></section>}
+    {project.membership_status === 'invited' && user.role === 'client' && <section className="surface project-invitation-actions"><div><strong>Invitation pending</strong><p>Sent to {project.invited_email || project.freelancer_name}. You can resend the invitation or cancel it.</p></div><button type="button" className="secondary-button" disabled={busy} onClick={onResendInvitation}>Resend invitation</button><button type="button" className="text-button danger" disabled={busy} onClick={onCancelInvitation}>Cancel invitation</button></section>}
+    {project.status === 'cancelled' && <div className="notice-box">This project invitation was cancelled. Create a new project if you want to invite this freelancer again.</div>}
+    <div className="project-layout"><section className="surface"><div className="section-head"><div><span className="eyebrow">AGREED WORK</span><h2>Milestones</h2></div><span className="subtle-count">{project.milestones?.length || 0} total</span></div>{project.membership_status === 'invited' && user.role === 'client' && <div className="notice-box">The freelancer must accept the project invitation before accepting milestone terms or submitting work.</div>}{!project.milestones?.length ? <div className="empty-state"><span>◇</span><h3>No milestones added</h3><p>The client can propose deliverables, acceptance criteria, amount, and due date.</p></div> : <div className="milestone-list">{project.milestones.map((item) => <button className="milestone-row" key={item.id} onClick={() => onSelect(item.id)}><span className="milestone-number">{item.title.slice(0,1).toUpperCase()}</span><span className="milestone-info"><strong>{item.title}</strong><small>{item.acceptance_criteria.length} criteria · terms {item.agreement_status.replaceAll('_', ' ')}</small></span><span className={`status-chip status-${item.status}`}>{item.status.replaceAll('_', ' ')}</span><span className="milestone-amount">{item.currency} {item.amount}</span><span className="row-arrow">→</span></button>)}</div>}</section>{user.role === 'client' && project.status === 'active' && !['declined', 'cancelled'].includes(project.membership_status) && <CreateMilestoneForm project={project} busy={busy} onCreate={onCreateMilestone}/>}</div>
   </>
 }
 
@@ -905,9 +989,11 @@ function EditMilestoneForm({ milestone, busy, onUpdate }: { milestone: Milestone
   return <details className="surface edit-milestone"><summary>Edit agreed terms</summary><p>Terms lock after evidence submission or payment begins.</p><form className="stack-form compact-form" onSubmit={submit}><label>Milestone name<input name="title" defaultValue={milestone.title} required maxLength={160}/></label><label>Acceptance criteria<textarea name="criteria" defaultValue={milestone.acceptance_criteria.join('\n')} rows={5} required/></label><label>Agreed amount<input name="amount" type="number" min="0.01" step="0.01" defaultValue={milestone.amount} required/></label><label>Currency<input name="currency" defaultValue={milestone.currency} minLength={3} maxLength={3} required/></label><label>Deadline<input name="due_at" type="datetime-local" defaultValue={localDateTime(milestone.due_at)}/></label><button className="primary-button" disabled={busy}>Save milestone terms <span>→</span></button></form></details>
 }
 
-function MilestonePage({ milestone, project, user, busy, audit, onBack, onRefresh, onUpdate, onEvidence, onAssess, onDecision, onOrder, onAuthorize, onCapture, onReconcile }: {
+function MilestonePage({ milestone, project, user, busy, audit, onBack, onRefresh, onUpdate, onAgreement, onEvidence, onAssess, onDecision, onOrder, onAuthorize, onCapture, onReconcile }: {
   milestone: Milestone; project: Project; user: User; busy: boolean; audit: Awaited<ReturnType<typeof getAudit>>
-  onBack: () => void; onRefresh: () => void; onUpdate: (data: { title: string; acceptance_criteria: string[]; amount: string; currency: string; due_at?: string }) => Promise<boolean>; onEvidence: (text: string, links: string[], file?: File) => Promise<boolean>
+  onBack: () => void; onRefresh: () => void; onUpdate: (data: { title: string; acceptance_criteria: string[]; amount: string; currency: string; due_at?: string }) => Promise<boolean>
+  onAgreement: (decision: 'accepted' | 'changes_requested', note: string) => void
+  onEvidence: (text: string, links: string[], file?: File) => Promise<boolean>
   onAssess: () => void; onDecision: (decision: string, note: string) => void; onOrder: () => void
   onAuthorize: () => void; onCapture: () => void; onReconcile: () => void
 }) {
@@ -929,13 +1015,14 @@ function MilestonePage({ milestone, project, user, busy, audit, onBack, onRefres
   const latestReportCurrent = !!report && report.report?.evidence_revision === milestone.evidence_revision && !milestone.assessment_history?.[0]?.is_stale
   const currentReport = !!report?.assessment && latestReportCurrent
   return <><button className="back-button" onClick={onBack}>← {project.title}</button><div className="page-heading milestone-title-heading"><div><span className="eyebrow">MILESTONE · REVISION {milestone.evidence_revision}</span><h1>{milestone.title}</h1><p>{milestone.currency} {milestone.amount}{milestone.due_at ? ` · Due ${new Date(milestone.due_at).toLocaleDateString()}` : ''}</p></div><span className={`status-chip status-${milestone.status}`}>{milestone.status.replaceAll('_', ' ')}</span></div>
-    <div className="milestone-work-grid"><div className="work-column"><section className="surface criteria-card"><div className="section-head"><div><span className="eyebrow">THE AGREEMENT</span><h2>Acceptance criteria</h2></div></div><ol className="criteria-list">{milestone.acceptance_criteria.map((item, index) => <li key={`${index}-${item}`}><span>{String(index + 1).padStart(2,'0')}</span>{item}</li>)}</ol></section>{user.role === 'client' && milestone.evidence_revision === 0 && !milestone.payment && <EditMilestoneForm milestone={milestone} busy={busy} onUpdate={onUpdate}/>}
-      {user.role === 'freelancer' && <section className="surface"><div className="section-head"><div><span className="eyebrow">SUBMISSION</span><h2>Submit evidence</h2><p>Text, reference links, or a file. Links and files are stored but not opened or extracted by assessment.</p></div></div><form className="stack-form" onSubmit={evidenceSubmit}><label>What did you deliver?<textarea name="description" rows={5} maxLength={20000} placeholder="Add specific details and evidence excerpts…"/><small>Up to 20,000 characters. Any attachment is saved privately; its contents are not analyzed.</small></label><label>Reference links <textarea name="links" rows={2} placeholder="One http(s) URL per line"/></label><label>Attach a file<input name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.txt,.csv,application/pdf,image/png,image/jpeg,text/plain,text/csv"/><small>PDF, PNG, JPEG, TXT, or CSV · 3 MB maximum.</small></label><button className="primary-button" disabled={busy}>Submit evidence revision <span>→</span></button></form></section>}
+    <div className="milestone-work-grid"><div className="work-column"><section className="surface criteria-card"><div className="section-head"><div><span className="eyebrow">MILESTONE TERMS · {milestone.agreement_status.replaceAll('_', ' ').toUpperCase()}</span><h2>Acceptance criteria</h2></div></div><ol className="criteria-list">{milestone.acceptance_criteria.map((item, index) => <li key={`${index}-${item}`}><span>{String(index + 1).padStart(2,'0')}</span>{item}</li>)}</ol></section>{user.role === 'client' && milestone.agreement_status === 'changes_requested' && <div className="notice-box"><strong>Freelancer requested changes:</strong> {milestone.agreement_note || 'Review the requested changes and update the terms.'}</div>}{user.role === 'client' && milestone.evidence_revision === 0 && !milestone.payment && milestone.status !== 'paid' && <EditMilestoneForm milestone={milestone} busy={busy} onUpdate={onUpdate}/>}
+      {user.role === 'freelancer' && milestone.agreement_status !== 'accepted' && <section className="surface agreement-response-card"><div className="section-head"><div><span className="eyebrow">REVIEW THE TERMS</span><h2>{milestone.agreement_status === 'changes_requested' ? 'Waiting for updated terms' : 'Accept or request changes'}</h2><p>Evidence submission and review begin after you accept this milestone’s criteria and amount.</p></div></div>{project.membership_status !== 'accepted' ? <div className="notice-box">Accept the project invitation first, then return here to respond to milestone terms.</div> : <><label>Note to the client<textarea id="agreement-note" rows={3} maxLength={2000} defaultValue={milestone.agreement_status === 'changes_requested' ? milestone.agreement_note : ''} placeholder="If you need a change, explain what should be adjusted."/></label><div className="decision-actions"><button type="button" className="secondary-button" disabled={busy} onClick={() => { const note = (document.getElementById('agreement-note') as HTMLTextAreaElement).value.trim(); if (!note) { window.alert('Explain what needs to change.'); return } onAgreement('changes_requested', note) }}>Request changes</button><button type="button" className="primary-button" disabled={busy} onClick={() => { if (window.confirm('Accept these milestone terms?')) onAgreement('accepted', '') }}>Accept terms <span>✓</span></button></div></>}</section>}
+      {user.role === 'freelancer' && milestone.agreement_status === 'accepted' && <section className="surface"><div className="section-head"><div><span className="eyebrow">SUBMISSION</span><h2>Submit evidence</h2><p>Text, reference links, or a file. Links and files are stored but not opened or extracted by assessment.</p></div></div><form className="stack-form" onSubmit={evidenceSubmit}><label>What did you deliver?<textarea name="description" rows={5} maxLength={20000} placeholder="Add specific details and evidence excerpts…"/><small>Up to 20,000 characters. Any attachment is saved privately; its contents are not analyzed.</small></label><label>Reference links <textarea name="links" rows={2} placeholder="One http(s) URL per line"/></label><label>Attach a file<input name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.txt,.csv,application/pdf,image/png,image/jpeg,text/plain,text/csv"/><small>PDF, PNG, JPEG, TXT, or CSV · 3 MB maximum.</small></label><button className="primary-button" disabled={busy}>Submit evidence revision <span>→</span></button></form></section>}
       {!isClient && revisionFeedback.length > 0 && <section className="surface decision-card"><div className="section-head"><div><span className="eyebrow">CLIENT FEEDBACK</span><h2>Revision requests</h2><p>Feedback for this project, visible to its assigned freelancer.</p></div></div><div className="decision-history">{revisionFeedback.map((decision, index) => <article key={`${decision.decision}-${decision.created_at}-${index}`}><span>Revision requested · evidence revision {decision.evidence_revision}</span>{decision.note && <p>{decision.note}</p>}<small>{new Date(decision.created_at).toLocaleString()}</small></article>)}</div></section>}
       <section className="surface"><div className="section-head"><div><span className="eyebrow">EVIDENCE HISTORY</span><h2>Submissions</h2></div><span className="subtle-count">{milestone.evidence_history?.length || 0}</span></div>{!milestone.evidence_history?.length ? <p className="muted">No evidence has been submitted yet.</p> : <div className="history-list">{milestone.evidence_history.map((item) => <article className="history-item" key={item.id}><span className="history-rev">R{item.evidence_revision}</span><div><strong>{new Date(item.submitted_at).toLocaleString()}</strong><p>{item.description || 'No text description submitted.'}</p>{item.file_name && <><small>Attachment saved: {item.file_name} · not inspected</small>{item.file_url && <a className="file-download" href={evidenceFileUrl(item.file_url)}>Download file</a>}</>}{item.evidence_links?.map((link) => <small key={link} className="link-line">{link} · not opened</small>)}</div></article>)}</div>}</section>
       {isClient && <section className="surface review-card"><div className="section-head"><div><span className="eyebrow">AI ASSISTED REVIEW</span><h2>Assessment</h2><p>Assessment is advisory. It cannot approve this milestone or authorize payment.</p></div></div>{latestReportCurrent && report ? <AssessmentView result={report}/>:<div className="empty-inline"><span>✦</span><div><strong>{milestone.evidence_history?.length ? 'No current assessment' : 'Waiting for evidence'}</strong><p>Run an assessment after the freelancer submits a revision.</p></div></div>}{milestone.evidence_history?.length ? <button className="secondary-button" disabled={busy} onClick={onAssess}>Run assessment for revision {milestone.evidence_revision}</button> : null}{report && milestone.assessment_history?.[0]?.is_stale && <div className="notice-box">This assessment is stale because a newer evidence revision exists.</div>}</section>}
       {isClient && <section className="surface decision-card"><div className="section-head"><div><span className="eyebrow">CLIENT DECISION</span><h2>Your review decision</h2><p>Only the project client can approve or request a revision.</p></div></div><label className="decision-note">Note to freelancer<textarea id="decision-note" rows={2} maxLength={2000} placeholder="What should change or be kept in mind?"/></label><div className="decision-actions"><button className="secondary-button" disabled={busy || !currentReport || milestone.status === 'approved' || milestone.status === 'paid'} onClick={() => onDecision('revision_requested', (document.getElementById('decision-note') as HTMLTextAreaElement).value)}>Request revision</button><button className="primary-button" disabled={busy || !report?.assessment?.all_supported || !currentReport || milestone.status === 'approved' || milestone.status === 'paid'} onClick={() => { if (window.confirm('Approve this milestone based on the current evidence revision?')) onDecision('approved', '') }}>Approve milestone <span>✓</span></button></div>{milestone.status === 'approved' && <button className="text-button revoke-button" disabled={busy || milestone.payment?.status === 'capture_pending' || milestone.payment?.status === 'captured'} onClick={() => { if (window.confirm('Revoke this approval before capture starts?')) onDecision('revoked', 'Client revoked approval') }}>Revoke approval</button>}{milestone.decisions?.length ? <div className="decision-history"><strong>Decision history</strong>{milestone.decisions.slice(0, 5).map((decision, index) => <article key={`${decision.decision}-${decision.created_at}-${index}`}><span>{decision.decision.replaceAll('_', ' ')} · revision {decision.evidence_revision}</span>{decision.note && <p>{decision.note}</p>}<small>{new Date(decision.created_at).toLocaleString()}</small></article>)}</div> : null}</section>}
-      <PaymentPanel milestone={milestone} user={user} busy={busy} onOrder={onOrder} onAuthorize={onAuthorize} onCapture={onCapture} onReconcile={onReconcile}/></div>
+      <PaymentPanel milestone={milestone} user={user} busy={busy} payeeConnected={!!project.freelancer_paypal_connected} onOrder={onOrder} onAuthorize={onAuthorize} onCapture={onCapture} onReconcile={onReconcile}/></div>
       <aside className="timeline-column"><section className="surface"><div className="section-head"><div><span className="eyebrow">PROJECT HISTORY</span><h2>Audit timeline</h2></div><button className="icon-button" onClick={onRefresh} title="Refresh timeline" aria-label="Refresh timeline">↻</button></div>{!audit.length ? <p className="muted">Actions will appear here as the project progresses.</p> : <div className="timeline">{audit.map((item, i) => <article className="timeline-item" key={`${item.event_type}-${item.created_at}-${i}`}><span className="timeline-dot"/><div><strong>{item.event_type.replaceAll('.', ' ')}</strong><small>{new Date(item.created_at).toLocaleString()}</small><p>{item.actor_type}</p></div></article>)}</div>}</section><section className="surface trust-card"><span>◈</span><strong>What the assessor can see</strong><p>Only the submitted evidence text and agreed criteria. Links are not opened. Attachments are stored privately but not extracted.</p></section></aside>
     </div>
   </>
@@ -947,10 +1034,10 @@ function AssessmentView({ result }: { result: AssessmentResponse }) {
   return <div className="assessment-report"><div className="report-summary"><span className={`report-indicator ${assessment.all_supported ? 'good' : ''}`}>{assessment.all_supported ? '✓' : '!'}</span><div><strong>{assessment.overall_summary || (assessment.all_supported ? 'All criteria met' : 'Some criteria need follow-up')}</strong><small>Evidence revision {assessment.evidence_revision} · {result.report?.report_version || 'report'} · {result.trace.prompt_version} · {result.trace.model} · {(result.trace.duration_ms / 1000).toFixed(1)}s</small></div></div><div className="finding-list">{assessment.verdicts.map((finding) => <article className="finding" key={finding.criterion_id}><div className="finding-head"><strong>Criterion {finding.criterion_id}</strong><span className={`finding-status ${finding.verdict}`}>{finding.verdict.replaceAll('_',' ')}</span></div>{finding.quote && <blockquote>“{finding.quote}”</blockquote>}<p>{finding.reasoning}</p>{finding.observed_facts?.length > 0 && <small>Observed: {finding.observed_facts.join('; ')}</small>}{finding.model_inferences?.length > 0 && <small>Model inference: {finding.model_inferences.join('; ')}</small>}{finding.missing_or_contradictory?.length > 0 && <small>Missing or contradictory: {finding.missing_or_contradictory.join('; ')}</small>}{finding.recommended_next_action && <small>Next: {finding.recommended_next_action}</small>}</article>)}</div>{(result.report?.limitations || assessment.limitations || []).length > 0 && <div className="limitations"><strong>Limitations</strong><ul>{(result.report?.limitations || assessment.limitations).map((item) => <li key={item}>{item}</li>)}</ul></div>}</div>
 }
 
-function PaymentPanel({ milestone, user, busy, onOrder, onAuthorize, onCapture, onReconcile }: { milestone: Milestone; user: User; busy: boolean; onOrder: () => void; onAuthorize: () => void; onCapture: () => void; onReconcile: () => void }) {
+function PaymentPanel({ milestone, user, busy, payeeConnected, onOrder, onAuthorize, onCapture, onReconcile }: { milestone: Milestone; user: User; busy: boolean; payeeConnected: boolean; onOrder: () => void; onAuthorize: () => void; onCapture: () => void; onReconcile: () => void }) {
   const payment = milestone.payment
   if (user.role !== 'client' && !payment) return null
-  return <section className="surface payment-card"><div className="section-head"><div><span className="eyebrow">PAYMENT STATUS</span><h2>PayPal Sandbox</h2>
+  return <section className="surface payment-card"><div className="section-head"><div><span className="eyebrow">PAYMENT STATUS</span><h2>PayPal · Freelancer receiving account</h2>
   <div className="paypal-partner">
     <img
       className="paypal-logo"
@@ -959,7 +1046,7 @@ function PaymentPanel({ milestone, user, busy, onOrder, onAuthorize, onCapture, 
     />
     <span>PAYMENT PARTNER</span>
   </div>
-  </div><span className={`status-chip status-${payment?.status || 'not-created'}`}>{(payment?.status || 'not created').replaceAll('_', ' ')}</span></div><p>{payment ? `${payment.currency} ${payment.amount}` : 'Create a PayPal order for the agreed milestone amount.'}</p>{Number(payment?.refunded_amount || 0) > 0 && <small>Refunded: {payment?.currency} {payment?.refunded_amount}</small>}{payment?.paypal_order_id && <small>Order: {payment.paypal_order_id}</small>}{payment?.paypal_authorization_id && <small>Authorization: {payment.paypal_authorization_id}</small>}{payment?.paypal_capture_id && <small>Capture: {payment.paypal_capture_id}</small>}{payment?.status === 'created' && payment.paypal_approval_url && <a className="secondary-button link-button" href={payment.paypal_approval_url} target="_blank" rel="noreferrer">Continue to PayPal ↗</a>}{user.role === 'client' && !payment && <button className="secondary-button" disabled={busy || milestone.status === 'paid'} onClick={onOrder}>Create PayPal order</button>}{user.role === 'client' && payment?.status === 'created' && <button className="secondary-button" disabled={busy} onClick={onAuthorize}>Confirm buyer approval and authorize</button>}{user.role === 'client' && payment?.status === 'authorized' && milestone.status === 'approved' && <button className="primary-button" disabled={busy} onClick={onCapture}>Capture authorized amount <span>→</span></button>}{user.role === 'client' && payment?.status === 'capture_pending' && <button className="secondary-button" disabled={busy} onClick={onReconcile}>Reconcile with PayPal</button>}{payment?.status === 'captured' && <p className="payment-complete">Capture confirmed · {payment.paypal_capture_id}</p>}{(payment?.status === 'refunded' || payment?.status === 'partially_refunded') && <p className="payment-complete">PayPal confirmed {payment.status === 'refunded' ? 'the refund' : 'a partial refund'}.</p>}<small>TrustFlow coordinates this PayPal transaction; it does not provide legal escrow.</small></section>
+  </div><span className={`status-chip status-${payment?.status || 'not-created'}`}>{(payment?.status || 'not created').replaceAll('_', ' ')}</span></div><p>{payment ? `${payment.currency} ${payment.amount}` : 'Create an order for the agreed amount. PayPal settles captured funds to the freelancer account.'}</p>{user.role === 'client' && !payeeConnected && !payment && <div className="notice-box">The freelancer must connect an eligible PayPal receiving account before checkout can begin.</div>}{Number(payment?.refunded_amount || 0) > 0 && <small>Refunded: {payment?.currency} {payment?.refunded_amount}</small>}{payment?.paypal_order_id && <small>Order: {payment.paypal_order_id}</small>}{payment?.paypal_authorization_id && <small>Authorization: {payment.paypal_authorization_id}</small>}{payment?.paypal_capture_id && <small>Capture: {payment.paypal_capture_id}</small>}{payment?.status === 'created' && payment.paypal_approval_url && <a className="secondary-button link-button" href={payment.paypal_approval_url} target="_blank" rel="noreferrer">Continue to PayPal ↗</a>}{user.role === 'client' && !payment && <button className="secondary-button" disabled={busy || milestone.status === 'paid' || milestone.agreement_status !== 'accepted' || !payeeConnected} onClick={onOrder}>Create PayPal order</button>}{user.role === 'client' && payment?.status === 'created' && <button className="secondary-button" disabled={busy} onClick={onAuthorize}>Confirm buyer approval and authorize</button>}{user.role === 'client' && payment?.status === 'authorized' && milestone.status === 'approved' && <button className="primary-button" disabled={busy} onClick={onCapture}>Capture amount for freelancer <span>→</span></button>}{user.role === 'client' && payment?.status === 'capture_pending' && <button className="secondary-button" disabled={busy} onClick={onReconcile}>Reconcile with PayPal</button>}{payment?.status === 'captured' && <p className="payment-complete">PayPal confirmed settlement · {payment.paypal_capture_id}</p>}{(payment?.status === 'refunded' || payment?.status === 'partially_refunded') && <p className="payment-complete">PayPal confirmed {payment.status === 'refunded' ? 'the refund' : 'a partial refund'}.</p>}<small>TrustFlow coordinates this PayPal transaction; it does not provide legal escrow.</small></section>
 }
 
 export default App

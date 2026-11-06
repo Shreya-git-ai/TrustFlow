@@ -4,12 +4,12 @@ TrustFlow helps clients and freelancers coordinate milestone terms, evidence, AI
 
 ## How the workflow works
 
-1. A client creates a project and invites a freelancer who already has a TrustFlow account.
-2. The freelancer accepts the invitation. The client defines milestone criteria, amount, currency, and deadline.
-3. The freelancer submits a revision with text, HTTP(S) reference links, and optionally a private file (up to 3 MB).
-4. The client asks Gemini to assess the current revision against the saved criteria. The report is stored with criterion-level findings and an audit record.
+1. A client creates a project and invites a freelancer by email. A new freelancer can create an account from the invitation link; the invitation is attached after email verification when verification is enabled.
+2. The freelancer accepts or declines the invitation. The client proposes milestone criteria, amount, currency, and deadline; the freelancer accepts each milestone's terms or requests changes before work starts.
+3. The freelancer connects an eligible PayPal receiving account, then submits a revision with text, HTTP(S) reference links, and optionally a private file (up to 3 MB).
+4. The client asks Gemini to assess the current revision against the agreed criteria. The report is stored with criterion-level findings and an audit record.
 5. The client requests changes or explicitly approves the current revision.
-6. PayPal Sandbox order, buyer approval, authorization, capture, and reconciliation are handled separately from the AI report.
+6. PayPal order, buyer approval, authorization, capture to the freelancer's PayPal account, and reconciliation are handled separately from the AI report.
 
 Assessment considers only the submitted text. Reference links are not opened. PDF, image, and text attachments are stored as private PostgreSQL binary data and can be downloaded by project members, but file contents are not extracted or assessed. Reports disclose this limitation.
 
@@ -40,7 +40,7 @@ source venv/bin/activate       # Windows: venv\Scripts\activate
 python -m pip install -r backend/requirements.txt
 ```
 
-Create `backend/.env` from `backend/.env.example` only if it does not already exist. Add your PostgreSQL URL. To use assessments, set `GEMINI_API_KEY` and `TRUSTFLOW_MODEL`. For PayPal, set Sandbox `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`. Never commit `.env` or copy its values into the example file.
+Create `backend/.env` from `backend/.env.example` only if it does not already exist. Add your PostgreSQL URL. To use assessments, set `GEMINI_API_KEY` and `TRUSTFLOW_MODEL`. Direct freelancer settlement requires PayPal to approve TrustFlow as a marketplace partner; then configure Sandbox `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_PARTNER_MERCHANT_ID`, and `PAYPAL_PARTNER_ATTRIBUTION_ID`. Never commit `.env` or copy its values into the example file.
 
 Apply the base schema and all additive migrations explicitly:
 
@@ -65,7 +65,7 @@ npm ci
 npm run dev
 ```
 
-Vite serves the app at `http://localhost:5173` and proxies `/api` to the local backend. Create one client account and one freelancer account. The client enters the freelancer’s registered email to create the invitation; the freelancer signs in separately and accepts it.
+Vite serves the app at `http://localhost:5173` and proxies `/api` to the local backend. Create a client account and invite any freelancer email. The freelancer can sign up from the invitation email, verify the same address if required, accept the project, connect PayPal, and accept milestone terms before submitting work.
 
 ## Environment variables
 
@@ -74,21 +74,23 @@ Vite serves the app at `http://localhost:5173` and proxies `/api` to the local b
 - `DATABASE_URL` — PostgreSQL connection string.
 - `GEMINI_API_KEY`, `TRUSTFLOW_MODEL`, optional `TRUSTFLOW_FALLBACK_MODEL` — AI assessment provider.
 - `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, optional `PAYPAL_BASE_URL` — PayPal; Sandbox is the default.
+- `PAYPAL_PARTNER_MERCHANT_ID`, `PAYPAL_PARTNER_ATTRIBUTION_ID` — required for PayPal-approved marketplace seller onboarding and direct settlement to freelancers.
+- `PAYPAL_SELLER_RETURN_URL` — HTTPS callback to `/paypal-onboarding-return`; it must match the production frontend origin.
 - `PAYPAL_WEBHOOK_ID` — registered webhook ID required for signature verification.
 - `PAYPAL_RETURN_URL`, `PAYPAL_CANCEL_URL` — frontend callback pages.
 - `CORS_ORIGINS` — exact frontend origins, comma separated.
 - `TRUSTFLOW_ENV` — set to `production` when deployed; this enables Secure session cookies.
 - `SESSION_HASH_SALT` — generate a unique random value for production.
 - `TRUSTFLOW_FRONTEND_URL` — public frontend origin used for verification, invitation emails, and authenticated milestone links in Zapier events. Set this in deployed environments.
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_USE_SSL`, `SMTP_USE_STARTTLS` — SMTP delivery for verification, password reset, and project invitations when Zapier is not configured. `ZAPIER_AUTH_WEBHOOK_URL` can handle verification and reset instead. Signup requires email confirmation when either auth email channel is configured. Set provider credentials on the backend only; never commit them.
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME`, `SMTP_USE_SSL`, `SMTP_USE_STARTTLS` — SMTP delivery for signup verification, password reset, and project invitations. `SMTP_FROM_NAME` controls the sender label shown to recipients and defaults to `TrustFlow`. Signup verification uses SMTP only; when SMTP is configured, users must confirm their address before signing in. Set provider credentials on the backend only; never commit them.
 - `ZAPIER_WEBHOOK_URL` — server-only Zapier Catch Hook URL (or same-owner combined Catch Hook URL). Workflow and verified refund events are transactionally placed in the PostgreSQL outbox and retried; events remain queued if this setting is absent. Notification events include only their target email address so Zapier can send email actions; see [the Zapier guide](docs/REFUNDS_AND_ZAPIER.md) for setup and manual testing.
-- `ZAPIER_AUTH_WEBHOOK_URL` — optional dedicated Catch Hook for email verification and password reset when SMTP is unavailable. Keep it separate from workflow hooks because it carries short-lived account links.
+- `ZAPIER_AUTH_WEBHOOK_URL` — optional dedicated Catch Hook for password-reset links when SMTP is unavailable. Signup verification does not use Zapier.
 - `TRUSTFLOW_AGENT_TOKEN` — bearer token required for the agent refund-proposal intake endpoint.
 - `ELASTIC_APM_SERVER_URL`, optional `ELASTIC_APM_SECRET_TOKEN` — optional monitoring.
 
 ## Vercel services deployment
 
-The root `vercel.json` defines a FastAPI backend service and a Vite frontend service. In Vercel, set the project framework to **Services** and configure the backend environment variables in Project Settings. At minimum, set `DATABASE_URL`, `TRUSTFLOW_ENV=production`, a unique `SESSION_HASH_SALT`, and `TRUSTFLOW_FRONTEND_URL` to the public frontend origin; add Gemini, PayPal, SMTP, `ZAPIER_WEBHOOK_URL`, optional `ZAPIER_AUTH_WEBHOOK_URL`, and `TRUSTFLOW_AGENT_TOKEN` values as needed. Set `PAYPAL_RETURN_URL` and `PAYPAL_CANCEL_URL` to the Vercel production domain. Vercel deployment hostnames are included in backend origin checks automatically.
+The root `vercel.json` defines a FastAPI backend service and a Vite frontend service. In Vercel, set the project framework to **Services** and configure the backend environment variables in Project Settings. At minimum, set `DATABASE_URL`, `TRUSTFLOW_ENV=production`, a unique `SESSION_HASH_SALT`, and `TRUSTFLOW_FRONTEND_URL` to the public frontend origin; add Gemini, PayPal marketplace credentials, SMTP, `ZAPIER_WEBHOOK_URL`, optional `ZAPIER_AUTH_WEBHOOK_URL`, and `TRUSTFLOW_AGENT_TOKEN` values as needed. Set `PAYPAL_RETURN_URL`, `PAYPAL_CANCEL_URL`, and `PAYPAL_SELLER_RETURN_URL` to the Vercel production domain. Vercel deployment hostnames are included in backend origin checks automatically.
 
 Apply the database schema and migrations to the Vercel database before using the app. Evidence files up to 3 MB are stored in PostgreSQL so they remain available across serverless function instances. This increases database storage use; larger files should use an external object store.
 
@@ -98,12 +100,14 @@ The app prefers Argon2id through `argon2-cffi`. The existing offline development
 
 - `POST /auth/signup`, `POST /auth/login`, `GET /auth/me`, `PATCH /auth/me`, `POST /auth/logout`
 - `POST /auth/verify-email`, `POST /auth/resend-verification`, `POST /auth/password-reset/request`, `POST /auth/password-reset/confirm`
-- `GET /projects`, `POST /projects`, `GET /projects/{id}`, `POST /projects/{id}/accept`, `GET /projects/{id}/audit`
+- `GET /projects`, `POST /projects`, `GET /projects/{id}`, `POST /projects/{id}/accept`, `POST /projects/{id}/decline`, `POST /projects/{id}/invitation/cancel`, `POST /projects/{id}/invitation/resend`, `GET /projects/{id}/audit`
 - `POST /projects/{id}/milestones`, `PUT /projects/{id}/milestones/{milestone_id}`
-- `GET /milestones/{id}`, `POST /milestones/{id}/evidence`, `GET /milestones/{id}/evidence/{evidence_id}/file`
+- `GET /milestones/{id}`, `POST /milestones/{id}/agreement`, `POST /milestones/{id}/evidence`, `GET /milestones/{id}/evidence/{evidence_id}/file`
 - `POST /milestones/{id}/assessments`, `POST /milestones/{id}/decision`
 - `POST /milestones/{id}/payment/order`, `POST /milestones/{id}/payment/authorize`, `POST /milestones/{id}/payment/capture`, `POST /milestones/{id}/payment/reconcile`
 - `GET /refund-proposals`, `POST /refund-proposals/{id}/decision`, trusted-agent `POST /agent/refund-proposals`
+- `POST /auth/paypal/onboarding`, `POST /auth/paypal/onboarding/complete`
+- `GET /notifications`, `POST /notifications/read`, `GET/PATCH /notification-preferences`
 - `POST /webhooks/paypal`
 - `GET /health`, `GET /agent/health`, authenticated `GET /ready`
 
@@ -113,7 +117,7 @@ Cookie-authenticated mutations require the `X-CSRF-Token` returned by login or `
 
 Agent refund proposals appear in the client payment dashboard and require an explicit client decision before PayPal receives a refund request. Configure PayPal's `PAYMENT.CAPTURE.REFUNDED` event and a Zapier Catch Hook to automate ticket resolution. Setup steps and the agent proposal payload are in [the refund and Zapier guide](docs/REFUNDS_AND_ZAPIER.md).
 
-Zapier also receives evidence-submitted, assessment-completed, revision-requested, milestone-approved, and confirmed-payment-captured notifications. Event creation is server-side and transactional; delivery uses the existing retryable outbox. Configure a scheduled outbox worker in deployments without the Render cron service.
+Zapier also receives invitation, milestone-agreement, evidence-submitted, assessment-completed, revision-requested, milestone-approved, and confirmed-payment-captured notifications. Event creation is server-side and transactional; delivery uses the existing retryable outbox. Configure a scheduled outbox worker in deployments without the Render cron service.
 
 The old unscoped `/assessments`, `/agent/assess`, and `/paypal/*` payment routes are not registered by the application. Use the milestone-scoped authenticated endpoints above.
 
@@ -136,8 +140,9 @@ Backend tests mock Gemini and PayPal calls. They do not apply database migration
 
 ## Known MVP limits
 
-- Email verification and password recovery use one-time links sent through backend SMTP. Local development signup remains immediate when SMTP is not configured; production signup is blocked until email delivery is configured. Zapier can send project and milestone workflow notifications; project invitations use Zapier when its Catch Hook is configured and SMTP otherwise.
-- Rows already present in the legacy `users` table have no password hashes. They cannot sign in through the new auth flow until a secure account-claim process is added.
+- Signup verification uses one-time links sent through backend SMTP only. Local development signup remains immediate when SMTP is not configured; production signup is blocked until SMTP is configured. Password-reset links can use the separate `ZAPIER_AUTH_WEBHOOK_URL` when SMTP is unavailable. Zapier can send project and milestone workflow notifications; project invitations use Zapier when its Catch Hook is configured and SMTP otherwise.
+- Direct freelancer settlement requires PayPal marketplace partner approval, seller onboarding permissions for payment and refund, and a receiving account eligible to accept the milestone currency. This repository does not enable marketplace capabilities on its own; without PayPal partner approval, onboarding and payments remain unavailable.
+- Rows already present in the legacy `users` table may not have a password hash. Those users should use **Forgot password** with the account email to set a password through the verified email reset flow.
 - Uploaded files (up to 3 MB) are stored privately in PostgreSQL and downloadable by project members, but are not extracted, scanned for malware, OCRed, or included in the Gemini prompt. Do not treat file-only evidence as verified.
 - Evidence links are recorded and checked for valid HTTP(S) shape, but never fetched.
 - An uncertain capture remains `capture_pending`; the backend will not issue another capture. Reconcile through the verified webhook or the authenticated PayPal order check. A mismatch requires operator review.

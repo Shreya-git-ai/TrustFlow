@@ -63,7 +63,27 @@ def public_user(row: dict[str, Any]) -> dict[str, Any]:
         "email": row["email"],
         "role": row["role"],
         "email_verified": bool(row.get("email_verified", True)),
+        "paypal_merchant_id": row.get("paypal_merchant_id"),
     }
+
+
+def _claim_project_invitations(connection, user: dict[str, Any]) -> None:
+    """Attach invitations by email only after the address is verified (or in dev signup)."""
+    if user.get("role") != "freelancer":
+        return
+    invitations = connection.execute(
+        """UPDATE projects SET freelancer_id = %s
+           WHERE lower(invited_email) = lower(%s) AND freelancer_id IS NULL
+             AND membership_status = 'invited'
+           RETURNING id, client_id""",
+        (user["id"], user["email"]),
+    ).fetchall()
+    for invitation in invitations:
+        connection.execute(
+            """INSERT INTO audit_events(project_id, event_type, actor_type, actor_id, details)
+               VALUES (%s, 'project.invitation_account_linked', 'system', NULL, %s)""",
+            (invitation["id"], Jsonb({"freelancer_id": str(user["id"])})),
+        )
 
 
 def create_user(email: str, name: str, password: str, role: str) -> tuple[dict, str, str]:
@@ -77,6 +97,7 @@ def create_user(email: str, name: str, password: str, role: str) -> tuple[dict, 
                RETURNING id, email, display_name, role""",
             (email, name, password_hash, role),
         ).fetchone()
+        _claim_project_invitations(connection, row)
         connection.execute(
             """INSERT INTO auth_sessions(session_hash, csrf_token, user_id, expires_at)
                VALUES (%s, %s, %s, %s)""",
@@ -157,11 +178,12 @@ def verify_email_token(token: str) -> bool:
         if row["consumed_at"] is not None or row["expires_at"] <= datetime.now(timezone.utc):
             return False
         updated = connection.execute(
-            "UPDATE users SET email_verified = TRUE WHERE id = %s RETURNING id",
+            "UPDATE users SET email_verified = TRUE WHERE id = %s RETURNING id, email, role",
             (row["user_id"],),
         ).fetchone()
         if updated is None:
             return False
+        _claim_project_invitations(connection, updated)
         connection.execute(
             "UPDATE email_verification_tokens SET consumed_at = NOW() WHERE user_id = %s AND consumed_at IS NULL",
             (row["user_id"],),
@@ -272,7 +294,7 @@ def clear_login_rate(email: str, ip: str) -> None:
 def authenticate(email: str, password: str) -> dict | None:
     with read_connection() as connection:
         row = connection.execute(
-            "SELECT id, email, display_name, role, password_hash, email_verified FROM users WHERE lower(email) = lower(%s)",
+            "SELECT id, email, display_name, role, password_hash, email_verified, paypal_merchant_id FROM users WHERE lower(email) = lower(%s)",
             (email,),
         ).fetchone()
     valid_password = verify_password(row.get("password_hash") if row else None, password)
@@ -310,7 +332,7 @@ def lookup_session(token: str | None) -> dict | None:
         return None
     with read_connection() as connection:
         row = connection.execute(
-            """SELECT u.id, u.email, u.display_name, u.role, u.email_verified, s.csrf_token
+            """SELECT u.id, u.email, u.display_name, u.role, u.email_verified, u.paypal_merchant_id, s.csrf_token
                FROM auth_sessions s JOIN users u ON u.id = s.user_id
                WHERE s.session_hash = %s AND s.revoked_at IS NULL AND s.expires_at > NOW()
                  AND u.email_verified = TRUE""",
@@ -344,7 +366,7 @@ def change_account(user: dict, name: str, current_password: str, new_password: s
     csrf = secrets.token_urlsafe(32)
     with transaction() as connection:
         updated = connection.execute(
-            "UPDATE users SET display_name = %s, password_hash = %s WHERE id = %s RETURNING id, email, display_name, role",
+            "UPDATE users SET display_name = %s, password_hash = %s WHERE id = %s RETURNING id, email, display_name, role, paypal_merchant_id",
             (name.strip(), new_hash, user["id"]),
         ).fetchone()
         connection.execute("UPDATE auth_sessions SET revoked_at = NOW() WHERE user_id = %s AND revoked_at IS NULL", (user["id"],))

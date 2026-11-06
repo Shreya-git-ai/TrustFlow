@@ -65,8 +65,13 @@ async def create_order(milestone_id: str, background_tasks: BackgroundTasks, use
             "status": payment["status"],
         }
     paypal = PayPalClient()
+    if not paypal.marketplace_configured:
+        raise HTTPException(503, "PayPal direct seller payments are not configured. Marketplace partner approval and credentials are required.")
     try:
-        response, data = await paypal.create_order(payment["amount"], payment["currency"].strip(), payment["create_request_id"])
+        response, data = await paypal.create_order(
+            payment["amount"], payment["currency"].strip(), payment["create_request_id"],
+            payee_merchant_id=payment["paypal_payee_merchant_id"],
+        )
     except Exception as error:
         log_event("error", "payment.order.create.unknown", error=type(error).__name__)
         raise HTTPException(502, "PayPal order result is unknown; retry this operation to reconcile the same request") from error
@@ -89,7 +94,7 @@ async def authorize_order(milestone_id: str, background_tasks: BackgroundTasks, 
         raise HTTPException(409, "Create the PayPal order before authorizing")
     paypal = PayPalClient()
     try:
-        order_response, order = await paypal.get_order(payment["paypal_order_id"])
+        order_response, order = await paypal.get_order(payment["paypal_order_id"], payment["paypal_payee_merchant_id"])
         if not order_response.is_success:
             raise HTTPException(502, "Could not confirm PayPal buyer approval")
         existing_auth = _extract_authorization(order)
@@ -101,7 +106,7 @@ async def authorize_order(milestone_id: str, background_tasks: BackgroundTasks, 
             raise HTTPException(409, "PayPal has not confirmed buyer approval")
         else:
             _domain(payments.set_buyer_approved, user, milestone_id)
-            response, data = await paypal.authorize_order(payment["paypal_order_id"], payment["authorize_request_id"])
+            response, data = await paypal.authorize_order(payment["paypal_order_id"], payment["paypal_payee_merchant_id"], payment["authorize_request_id"])
             if not response.is_success:
                 raise HTTPException(502, "PayPal authorization failed")
             auth = _extract_authorization(data)
@@ -139,7 +144,7 @@ async def capture_authorization(milestone_id: str, background_tasks: BackgroundT
     existing = _domain(payments.payment_for_client, user, milestone_id)
     if existing["status"] == "authorized":
         try:
-            auth_response, authorization = await PayPalClient().get_authorization(existing["paypal_authorization_id"])
+            auth_response, authorization = await PayPalClient().get_authorization(existing["paypal_authorization_id"], existing["paypal_payee_merchant_id"])
         except Exception as error:
             log_event("error", "payment.authorization.check.failed", error=type(error).__name__)
             raise HTTPException(502, "Could not confirm authorization eligibility") from error
@@ -167,7 +172,8 @@ async def capture_authorization(milestone_id: str, background_tasks: BackgroundT
     paypal = PayPalClient()
     try:
         response, data = await paypal.capture_authorization(
-            payment["paypal_authorization_id"], payment["amount"], payment["currency"].strip(), payment["capture_request_id"]
+            payment["paypal_authorization_id"], payment["amount"], payment["currency"].strip(),
+            payment["paypal_payee_merchant_id"], payment["capture_request_id"],
         )
     except Exception as error:
         log_event("error", "payment.capture.unknown", error=type(error).__name__)
@@ -204,7 +210,7 @@ async def reconcile_capture(
     payment = _domain(payments.payment_for_client, user, milestone_id)
     if payment["status"] != "capture_pending" or not payment.get("paypal_order_id"):
         raise HTTPException(409, "This payment does not need reconciliation")
-    response, order = await PayPalClient().get_order(payment["paypal_order_id"])
+    response, order = await PayPalClient().get_order(payment["paypal_order_id"], payment["paypal_payee_merchant_id"])
     if not response.is_success:
         raise HTTPException(502, "Could not reconcile PayPal order")
     capture = next((item for item in _walk_captures(order) if item.get("status") == "COMPLETED"), None)

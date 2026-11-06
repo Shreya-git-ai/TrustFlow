@@ -167,7 +167,8 @@ def list_for_merchant(user: dict, status: str = "all") -> list[dict]:
 def _proposal_for_update(connection, proposal_id: str, user: dict) -> dict:
     row = connection.execute(
         """SELECT proposal.*, payment.status AS payment_status,
-                  payment.paypal_capture_id, payment.paypal_order_id, payment.amount AS payment_amount,
+                  payment.paypal_capture_id, payment.paypal_order_id, payment.paypal_payee_merchant_id,
+                  payment.amount AS payment_amount,
                   payment.currency, payment.refunded_amount, payment.milestone_id,
                   milestone.project_id, project.client_id,
                   project.title AS project_title, milestone.title AS milestone_title

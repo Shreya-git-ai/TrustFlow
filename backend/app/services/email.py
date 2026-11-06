@@ -5,7 +5,8 @@ import os
 import smtplib
 import ssl
 from email.message import EmailMessage
-from urllib.parse import quote
+from email.utils import formataddr, parseaddr
+from urllib.parse import quote, urlencode
 from uuid import uuid4
 
 from app.integrations.zapier import send_event
@@ -31,7 +32,11 @@ def _send(to_address: str, subject: str, body: str) -> None:
 
     try:
         message = EmailMessage()
-        message["From"] = os.environ["SMTP_FROM_EMAIL"].strip()
+        _, sender_address = parseaddr(os.environ["SMTP_FROM_EMAIL"].strip())
+        if not sender_address:
+            raise ValueError("SMTP_FROM_EMAIL must contain a valid email address")
+        sender_name = os.getenv("SMTP_FROM_NAME", "TrustFlow").strip() or "TrustFlow"
+        message["From"] = formataddr((sender_name, sender_address))
         message["To"] = to_address
         message["Subject"] = " ".join(subject.splitlines())[:180]
         message.set_content(body)
@@ -97,17 +102,16 @@ def _mark_token_email_sent(mark_sent, token: str, event_name: str) -> None:
 
 
 def send_verification_email(email: str, name: str, token: str) -> bool:
+    if not email_delivery_configured():
+        raise EmailDeliveryError("SMTP email delivery is not configured")
     link = f"{_frontend_url()}/verify-email#{quote(token, safe='')}"
-    if email_delivery_configured():
-        body = (
-            f"Hi {name or 'there'},\n\n"
-            "Confirm your TrustFlow email address to activate your account:\n"
-            f"{link}\n\n"
-            "This link expires in 24 hours. If you did not create this account, you can ignore this email.\n"
-        )
-        _send(email, "Confirm your TrustFlow email", body)
-    else:
-        _send_auth_email_via_zapier("auth.email_verification", email, name, link, 24 * 60)
+    body = (
+        f"Hi {name or 'there'},\n\n"
+        "Confirm your TrustFlow email address to activate your account:\n"
+        f"{link}\n\n"
+        "This link expires in 24 hours. If you did not create this account, you can ignore this email.\n"
+    )
+    _send(email, "Confirm your TrustFlow email", body)
     _mark_token_email_sent(auth.mark_verification_email_sent, token, "email.verification.sent_at_failed")
     return True
 
@@ -131,12 +135,13 @@ def send_password_reset_email(email: str, name: str, token: str) -> bool:
 def send_project_invitation_email(email: str, recipient_name: str, client_name: str, project_title: str) -> bool:
     if not email_delivery_configured():
         return False
+    invite_url = f"{_frontend_url()}/?{urlencode({'signup': 'freelancer', 'email': email})}"
     body = (
         f"Hi {recipient_name or 'there'},\n\n"
         f"{client_name or 'A TrustFlow client'} invited you to join the project “{project_title}”.\n"
         "Sign in to TrustFlow to review and accept the invitation:\n"
-        f"{_frontend_url()}/\n\n"
-        "You can review the project before accepting.\n"
+        f"{invite_url}\n\n"
+        "Create or sign in to your freelancer account with this email to review the invitation.\n"
     )
     try:
         _send(email, f"TrustFlow project invitation: {project_title}", body)
@@ -145,4 +150,22 @@ def send_project_invitation_email(email: str, recipient_name: str, client_name: 
         return False
     except Exception as error:
         log_event("error", "email.invitation.failed", error=type(error).__name__)
+        return False
+
+
+def send_project_invitation_cancelled_email(email: str, client_name: str, project_title: str) -> bool:
+    if not email_delivery_configured():
+        return False
+    body = (
+        f"Hi there,\n\n"
+        f"{client_name or 'A TrustFlow client'} cancelled the invitation to join “{project_title}”.\n"
+        "You do not need to take any action for this project.\n"
+    )
+    try:
+        _send(email, f"TrustFlow invitation cancelled: {project_title}", body)
+        return True
+    except EmailDeliveryError:
+        return False
+    except Exception as error:
+        log_event("error", "email.invitation_cancelled.failed", error=type(error).__name__)
         return False

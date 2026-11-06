@@ -1654,6 +1654,29 @@ button.pulse-metric-row:hover span, button.pulse-metric-row:hover strong { color
 .activity-preview-list { display: grid; }
 .activity-event { display: flex; align-items: center; width: 100%; gap: 11px; padding: 12px 4px; border: 0; border-top: 1px solid #f0f0f6; text-align: left; background: transparent; cursor: pointer; }
 .activity-event:hover { background: #faf9ff; }
+
+/* Collaboration and direct seller settlement steps. */
+.create-project-invite-row { grid-template-columns: minmax(0, 1fr) minmax(64px, .24fr) auto; }
+.create-project-invite-row label small { color: #85848f; font-size: 9px; line-height: 1.4; }
+.project-invitation-actions { display: flex; align-items: center; gap: 9px; margin-bottom: 16px; padding: 15px 18px; }
+.project-invitation-actions > div { min-width: 0; flex: 1; }
+.project-invitation-actions strong { color: #34343e; font-size: 12px; }
+.project-invitation-actions p { margin: 4px 0 0; color: #73737f; font-size: 10px; line-height: 1.45; }
+.project-invitation-actions .primary-button,.project-invitation-actions .secondary-button { min-height: 35px; white-space: nowrap; }
+.project-invitation-actions .danger { color: #a24a52; }
+.agreement-response-card { display: grid; gap: 12px; border-color: #e6e2f5; background: linear-gradient(135deg, #fff, #fbfaff); }
+.agreement-response-card .section-head { margin-bottom: 0; }
+.agreement-response-card .section-head p { margin-top: 6px; color: #73737f; font-size: 11px; line-height: 1.5; }
+.agreement-response-card > label { display: grid; gap: 6px; color: #555560; font-size: 11px; }
+.agreement-response-card textarea { min-height: 70px; padding: 9px 10px; border: 1px solid #e3e2e7; border-radius: 8px; color: #30303a; font: inherit; resize: vertical; }
+.paypal-connect-card > p { color: #71717d; font-size: 11px; line-height: 1.55; }
+.paypal-connect-card > .primary-button { margin-top: 12px; }
+.paypal-connect-card > small { display: block; margin-top: 10px; color: #73737f; font-size: 10px; }
+@media (max-width: 700px) {
+  .create-project-invite-row { grid-template-columns: minmax(0, 1fr); }
+  .project-invitation-actions { align-items: stretch; flex-direction: column; }
+  .project-invitation-actions > .primary-button,.project-invitation-actions > .secondary-button { align-self: flex-start; }
+}
 .activity-preview-icon { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 32px; border-radius: 10px; font-size: 13px; }
 .activity-preview-icon.purple { color: #6759c9; background: #f0edff; }
 .activity-preview-icon.green { color: #378866; background: #eaf7ef; }
@@ -4119,4 +4142,11 @@ body { background: var(--tf-page); }
   .topbar-paypal { width: 118px; min-height: 38px; flex-basis: 118px; padding: 3px 7px; }
   .topbar-paypal .powered-by { font-size: 6px !important; }
   .topbar-paypal .paypal-logo { width: 64px; height: 22px; }
+}
+
+/* Keep the invitation's three fields aligned after dashboard layout rules. */
+.create-project-invite-row { grid-template-columns: minmax(0, 1fr) minmax(64px, .24fr) auto; }
+.auth-card .stack-form label > small { color: #85848f; font-size: 10px; font-weight: 450; line-height: 1.4; }
+@media (max-width: 700px) {
+  .create-project-invite-row { grid-template-columns: minmax(0, 1fr); }
 }

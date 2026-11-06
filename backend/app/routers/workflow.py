@@ -16,7 +16,7 @@ from app.agent.providers.gemini_provider import GeminiProvider
 from app.schemas.assessment import AssessmentInput, CriterionInput
 from app.security import get_current_user, require_csrf, set_session_cookie
 from app.services import auth, storage, workflow
-from app.services.email import send_project_invitation_email
+from app.services.email import send_project_invitation_cancelled_email, send_project_invitation_email
 from app.services.events import deliver_pending
 
 router = APIRouter(tags=["workflow"])
@@ -40,6 +40,20 @@ class MilestoneBody(BaseModel):
 class DecisionBody(BaseModel):
     decision: str
     note: str = Field(default="", max_length=2000)
+
+
+class AgreementDecisionBody(BaseModel):
+    decision: str
+    note: str = Field(default="", max_length=2000)
+
+
+class NotificationReadBody(BaseModel):
+    event_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+class NotificationPreferencesBody(BaseModel):
+    project_updates: bool
+    payment_alerts: bool
 
 
 class AccountBody(BaseModel):
@@ -113,8 +127,41 @@ def project(project_id: str, user: dict = Depends(get_current_user)):
 
 
 @router.post("/projects/{project_id}/accept")
-def accept_invitation(project_id: str, user: dict = Depends(require_csrf)):
-    return _domain(workflow.accept_project, user, project_id)
+def accept_invitation(project_id: str, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
+    result = _domain(workflow.accept_project, user, project_id)
+    background_tasks.add_task(deliver_pending)
+    return result
+
+
+@router.post("/projects/{project_id}/decline")
+def decline_invitation(project_id: str, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
+    result = _domain(workflow.decline_project, user, project_id)
+    background_tasks.add_task(deliver_pending)
+    return result
+
+
+@router.post("/projects/{project_id}/invitation/cancel")
+def cancel_invitation(project_id: str, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
+    result = _domain(workflow.cancel_project_invitation, user, project_id)
+    if not os.getenv("ZAPIER_WEBHOOK_URL", "").strip():
+        background_tasks.add_task(
+            send_project_invitation_cancelled_email,
+            result["invited_email"], user.get("name", ""), result["title"],
+        )
+    background_tasks.add_task(deliver_pending)
+    return {"id": result["id"], "membership_status": result["membership_status"]}
+
+
+@router.post("/projects/{project_id}/invitation/resend", status_code=202)
+def resend_invitation(project_id: str, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
+    invitation = _domain(workflow.resend_project_invitation, user, project_id)
+    if not os.getenv("ZAPIER_WEBHOOK_URL", "").strip():
+        background_tasks.add_task(
+            send_project_invitation_email,
+            invitation["invited_email"], "", invitation.get("client_name", ""), invitation["title"],
+        )
+    background_tasks.add_task(deliver_pending)
+    return {"sent": True}
 
 
 @router.get("/projects/{project_id}/audit")
@@ -125,6 +172,26 @@ def audit(project_id: str, user: dict = Depends(get_current_user)):
 @router.get("/activity")
 def activity(limit: int = Query(default=30, ge=1, le=100), user: dict = Depends(get_current_user)):
     return _domain(workflow.activity_feed, user, limit)
+
+
+@router.get("/notifications")
+def notifications(limit: int = Query(default=100, ge=1, le=100), user: dict = Depends(get_current_user)):
+    return _domain(workflow.notification_feed, user, limit)
+
+
+@router.post("/notifications/read")
+def notifications_read(body: NotificationReadBody, user: dict = Depends(require_csrf)):
+    return {"updated": _domain(workflow.mark_notifications_read, user, body.event_ids)}
+
+
+@router.get("/notification-preferences")
+def notification_preferences(user: dict = Depends(get_current_user)):
+    return _domain(workflow.get_notification_preferences, user)
+
+
+@router.patch("/notification-preferences")
+def update_notification_preferences(body: NotificationPreferencesBody, user: dict = Depends(require_csrf)):
+    return _domain(workflow.update_notification_preferences, user, body.project_updates, body.payment_alerts)
 
 
 @router.post("/projects/{project_id}/milestones", status_code=201)
@@ -191,6 +258,13 @@ def submit_evidence(milestone_id: str, body: EvidenceBody, background_tasks: Bac
         except (storage.UnsafeUpload, binascii.Error, ValueError) as error:
             raise HTTPException(422, str(error)) from error
     result = _domain(workflow.add_evidence, user, milestone_id, body.description, checked_links, file_info)
+    background_tasks.add_task(deliver_pending)
+    return result
+
+
+@router.post("/milestones/{milestone_id}/agreement")
+def milestone_agreement(milestone_id: str, body: AgreementDecisionBody, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
+    result = _domain(workflow.decide_milestone_agreement, user, milestone_id, body.decision, body.note)
     background_tasks.add_task(deliver_pending)
     return result
 

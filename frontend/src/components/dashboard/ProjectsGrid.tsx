@@ -39,6 +39,7 @@ type ProjectsGridProps = {
   onOpen: (id: string) => void
   onEdit: (id: string) => void
   onAccept: (id: string) => void
+  onDecline: (id: string) => void
   onClearFilters: () => void
 }
 
@@ -47,8 +48,8 @@ function makeProjectRow(project: Project, role: User['role'], activity?: Workspa
   const reviewCount = project.submitted_count || 0
   const revisionCount = project.revision_count || 0
   const decisionCount = project.decision_due_count || 0
-  const actionCount = invited ? (role === 'freelancer' ? 1 : 0) : role === 'client' ? Math.max(reviewCount, decisionCount) : revisionCount
-  let actionSummary = 'No pending actions'
+  const actionCount = project.status === 'cancelled' ? 0 : invited ? (role === 'freelancer' ? 1 : 0) : role === 'client' ? Math.max(reviewCount, decisionCount) : revisionCount
+  let actionSummary = project.status === 'cancelled' ? 'Project cancelled' : 'No pending actions'
   if (invited) actionSummary = role === 'freelancer' ? 'Invitation to accept' : 'Invitation sent'
   else if (role === 'client') {
     actionSummary = [
@@ -68,7 +69,7 @@ function makeProjectRow(project: Project, role: User['role'], activity?: Workspa
     collaborator: role === 'client'
       ? project.freelancer_name || 'Not assigned'
       : project.client_name || 'Not listed',
-    statusLabel: invited
+    statusLabel: project.status === 'cancelled' ? 'Cancelled' : invited
       ? role === 'freelancer' ? 'Invitation received' : 'Invitation sent'
       : project.membership_status === 'declined' ? 'Declined' : needsReview ? 'Needs attention' : needsRevision ? 'Revision requested' : 'Active',
     actionCount,
@@ -109,10 +110,10 @@ function makeRowIconButton(label: string, pathData: string) {
   return button
 }
 
-export default function ProjectsGrid({ projects, activity, role, busy, onOpen, onEdit, onAccept, onClearFilters }: ProjectsGridProps) {
+export default function ProjectsGrid({ projects, activity, role, busy, onOpen, onEdit, onAccept, onDecline, onClearFilters }: ProjectsGridProps) {
   const gridElement = useRef<HTMLDivElement>(null)
   const gridApi = useRef<GridApi<ProjectRow> | null>(null)
-  const handlers = useRef({ onOpen, onEdit, onAccept, busy })
+  const handlers = useRef({ onOpen, onEdit, onAccept, onDecline, busy })
   const [visibleCount, setVisibleCount] = useState(projects.length)
   const [hasColumnFilters, setHasColumnFilters] = useState(false)
 
@@ -248,7 +249,7 @@ export default function ProjectsGrid({ projects, activity, role, busy, onOpen, o
     {
       colId: 'action',
       headerName: '',
-      width: 122,
+      width: role === 'freelancer' ? 210 : 122,
       sortable: false,
       filter: false,
       resizable: false,
@@ -258,6 +259,8 @@ export default function ProjectsGrid({ projects, activity, role, busy, onOpen, o
         if (!data) return ''
         const invited = role === 'freelancer' && data.membership_status === 'invited'
         if (invited) {
+          const actions = document.createElement('span')
+          actions.className = 'project-grid-row-actions'
           const accept = document.createElement('button')
           accept.type = 'button'
           accept.className = 'project-grid-action accept'
@@ -268,7 +271,18 @@ export default function ProjectsGrid({ projects, activity, role, busy, onOpen, o
             event.stopPropagation()
             handlers.current.onAccept(data.id)
           })
-          return accept
+          const decline = document.createElement('button')
+          decline.type = 'button'
+          decline.className = 'project-grid-action'
+          decline.textContent = 'Decline'
+          decline.disabled = handlers.current.busy
+          decline.setAttribute('aria-label', `Decline invitation to ${data.title}`)
+          decline.addEventListener('click', (event) => {
+            event.stopPropagation()
+            handlers.current.onDecline(data.id)
+          })
+          actions.append(accept, decline)
+          return actions
         }
         const actions = document.createElement('span')
         actions.className = 'project-grid-row-actions'
@@ -278,7 +292,7 @@ export default function ProjectsGrid({ projects, activity, role, busy, onOpen, o
           handlers.current.onOpen(data.id)
         })
         actions.append(view)
-        if (role === 'client') {
+        if (role === 'client' && data.status === 'active' && !['declined', 'cancelled'].includes(data.membership_status)) {
           const edit = makeRowIconButton(`Edit a milestone in ${data.title}`, 'm4 16.5V20h3.5L19 8.5 15.5 5 4 16.5Zm9.8-9.9 3.5 3.5')
           edit.addEventListener('click', (event) => {
             event.stopPropagation()
@@ -292,8 +306,8 @@ export default function ProjectsGrid({ projects, activity, role, busy, onOpen, o
   ], [role])
 
   useEffect(() => {
-    handlers.current = { onOpen, onEdit, onAccept, busy }
-  }, [onOpen, onEdit, onAccept, busy])
+    handlers.current = { onOpen, onEdit, onAccept, onDecline, busy }
+  }, [onOpen, onEdit, onAccept, onDecline, busy])
 
   useEffect(() => {
     if (!gridElement.current) return

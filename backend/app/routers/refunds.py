@@ -86,6 +86,7 @@ async def refund_decision(
             str(proposal["currency"]).strip(),
             proposal["paypal_request_id"],
             str(proposal_id),
+            proposal["paypal_payee_merchant_id"],
         )
     except Exception as error:
         log_event("warning", "payment.refund.result_unknown", error=type(error).__name__)

@@ -2,16 +2,18 @@ const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, ''
 let csrfToken = ''
 export function evidenceFileUrl(path: string) { return `${API_BASE}${path}` }
 
-export type User = { id: string; name: string; email: string; role: 'client' | 'freelancer'; email_verified: boolean }
+export type User = { id: string; name: string; email: string; role: 'client' | 'freelancer'; email_verified: boolean; paypal_merchant_id?: string | null }
 export type Project = {
   id: string; title: string; description: string | null; currency: string; status: string
-  membership_status: 'invited' | 'accepted' | 'declined'; client_name: string; freelancer_name: string
+  membership_status: 'invited' | 'accepted' | 'declined' | 'cancelled'; invited_email?: string
+  client_name: string; freelancer_name: string | null; freelancer_paypal_connected?: boolean
   milestone_count?: number; progress_percent?: number; submitted_count?: number; revision_count?: number
   decision_due_count?: number; active_payment_count?: number; milestones?: Milestone[]
 }
 export type Milestone = {
   id: string; project_id: string; title: string; acceptance_criteria: string[]; amount: string
   currency: string; due_at: string | null; status: string; evidence_revision: number
+  agreement_status: 'pending' | 'accepted' | 'changes_requested'; agreement_note: string
   evidence_history?: Evidence[]; assessment_history?: Report[]; decisions?: Decision[]
   payment?: Payment | null
 }
@@ -31,6 +33,11 @@ export type Payment = {
 export type WorkspaceActivity = {
   event_type: string; actor_type: string; details: Record<string, unknown>; created_at: string
   project_id: string; project_title: string; milestone_id: string | null; milestone_title: string | null
+}
+export type WorkspaceNotification = {
+  event_id: number; event_type: string; actor_type: string; created_at: string
+  project_id: string; project_title: string; milestone_id: string | null; milestone_title: string | null
+  is_read: boolean
 }
 export type WorkspacePayment = {
   id: string; milestone_id: string; project_id: string; project_title: string; milestone_title: string
@@ -97,6 +104,15 @@ export async function createProject(payload: { title: string; description: strin
 }
 export async function getProject(id: string) { return request<Project>(`/projects/${id}`) }
 export async function acceptProject(id: string) { return request(`/projects/${id}/accept`, { method: 'POST', body: '{}' }) }
+export async function declineProject(id: string) { return request(`/projects/${id}/decline`, { method: 'POST', body: '{}' }) }
+export async function cancelProjectInvitation(id: string) { return request(`/projects/${id}/invitation/cancel`, { method: 'POST', body: '{}' }) }
+export async function resendProjectInvitation(id: string) { return request(`/projects/${id}/invitation/resend`, { method: 'POST', body: '{}' }) }
+export async function startPaypalOnboarding() {
+  return request<{ connected: boolean; approval_url?: string }>('/auth/paypal/onboarding', { method: 'POST', body: '{}' })
+}
+export async function completePaypalOnboarding(payload: { tracking_id: string; merchant_id: string; permissions_granted: boolean; consent_status: boolean }) {
+  return request<{ connected: boolean }>('/auth/paypal/onboarding/complete', { method: 'POST', body: JSON.stringify(payload) })
+}
 export async function createMilestone(projectId: string, payload: { title: string; acceptance_criteria: string[]; amount: string; currency: string; due_at?: string }) {
   return request<Milestone>(`/projects/${projectId}/milestones`, { method: 'POST', body: JSON.stringify(payload) })
 }
@@ -124,8 +140,21 @@ export async function assessMilestone(id: string) { return request<{ result: Ass
 export async function decideMilestone(id: string, decision: string, note: string) {
   return request(`/milestones/${id}/decision`, { method: 'POST', body: JSON.stringify({ decision, note }) })
 }
+export async function decideMilestoneAgreement(id: string, decision: 'accepted' | 'changes_requested', note = '') {
+  return request(`/milestones/${id}/agreement`, { method: 'POST', body: JSON.stringify({ decision, note }) })
+}
 export async function getAudit(projectId: string) { return request<{ event_type: string; actor_type: string; details: Record<string, unknown>; created_at: string }[]>(`/projects/${projectId}/audit`) }
 export async function getWorkspaceActivity() { return request<WorkspaceActivity[]>('/activity') }
+export async function getNotifications() { return request<WorkspaceNotification[]>('/notifications') }
+export async function markNotificationsRead(eventIds: number[]) {
+  return request<{ updated: number }>('/notifications/read', { method: 'POST', body: JSON.stringify({ event_ids: eventIds }) })
+}
+export async function getNotificationPreferences() {
+  return request<{ project_updates: boolean; payment_alerts: boolean }>('/notification-preferences')
+}
+export async function updateNotificationPreferences(preferences: { project_updates: boolean; payment_alerts: boolean }) {
+  return request<{ project_updates: boolean; payment_alerts: boolean }>('/notification-preferences', { method: 'PATCH', body: JSON.stringify(preferences) })
+}
 export async function getPayments() { return request<WorkspacePayment[]>('/payments') }
 export async function getRefundProposals(status = 'all') {
   return request<RefundProposal[]>(`/refund-proposals?status=${encodeURIComponent(status)}`)
