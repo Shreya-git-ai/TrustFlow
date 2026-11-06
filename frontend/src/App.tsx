@@ -9,7 +9,7 @@ import {
 } from './api/assessment'
 import NotificationCenter from './components/audit/NotificationCenter'
 import NotificationPreferencesCard from './components/audit/NotificationPreferences'
-import { defaultNotificationPreferences, savedNotificationPreferences, notificationsForPreferences, notificationDestination, type NotificationPreferences } from './components/audit/notificationData'
+import { defaultNotificationPreferences, savedNotificationPreferences, notificationDestination, type NotificationPreferences } from './components/audit/notificationData'
 import RecentActivity from './components/audit/RecentActivity'
 import PaymentsPage from './components/payments/PaymentsPage'
 import InsightsPage from './pages/InsightsPage'

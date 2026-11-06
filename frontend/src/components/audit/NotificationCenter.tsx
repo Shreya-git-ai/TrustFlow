@@ -1,6 +1,6 @@
 import type { WorkspaceNotification } from '../../api/assessment'
 import {
-  notificationDetail, notificationDestination, notificationIcon, notificationTitle,
+  notificationDetail, notificationIcon, notificationTitle,
   notificationTone, notificationsForPreferences, type NotificationPreferences,
 } from './notificationData'
 
