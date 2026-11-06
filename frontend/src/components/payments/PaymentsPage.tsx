@@ -1,5 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from 'react'
 import type { RefundProposal, User, WorkspacePayment } from '../../api/assessment'
+import { formatMoney } from '../../utils/currency'
 
 const RefundProposalsGrid = lazy(() => import('./RefundProposalsGrid'))
 type PaymentFilter = 'all' | 'in_progress' | 'captured' | 'attention'
@@ -77,8 +78,8 @@ export default function PaymentsPage({
                 <tbody>{visiblePayments.map((payment) => <tr key={payment.id}>
                   <td><strong>{payment.project_title}</strong><span className="payment-record-id">Record {payment.id.slice(0, 8)}</span></td>
                   <td>{payment.milestone_title}</td>
-                  <td className="ledger-amount">{payment.currency} {payment.amount}</td>
-                  <td className="ledger-amount refunded-amount">{Number(payment.refunded_amount || 0) > 0 ? `${payment.currency} ${payment.refunded_amount}` : '—'}</td>
+                  <td className="ledger-amount">{formatMoney(payment.amount, payment.currency)}</td>
+                  <td className="ledger-amount refunded-amount">{Number(payment.refunded_amount || 0) > 0 ? formatMoney(payment.refunded_amount || 0, payment.currency) : '—'}</td>
                   <td><span className={`payment-status-pill status-${payment.status}`}><i/>{statusLabel(payment.status)}</span></td>
                   <td>{new Date(payment.updated_at).toLocaleString()}</td>
                   <td><button type="button" className="payment-row-action" onClick={() => onOpenMilestone(payment)}>Open milestone <span aria-hidden="true">↗</span></button></td>
