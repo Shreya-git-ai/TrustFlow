@@ -170,9 +170,12 @@ class ZapierWorkflowEventTests(unittest.TestCase):
         self.milestone = {
             "id": self.milestone_id,
             "project_id": self.project_id,
+            "project_title": "Example project",
+            "title": "Milestone one",
             "client_id": "client-1",
             "freelancer_id": "freelancer-1",
             "membership_status": "accepted",
+            "agreement_status": "accepted",
             "status": "submitted",
             "evidence_revision": 2,
             "acceptance_criteria": ["Deliver the work"],
@@ -304,6 +307,8 @@ class ZapierWorkflowEventTests(unittest.TestCase):
             "id": "payment-1",
             "milestone_id": self.milestone_id,
             "project_id": self.project_id,
+            "project_title": "Example project",
+            "milestone_title": "Milestone one",
             "client_id": "client-1",
             "freelancer_id": "freelancer-1",
             "client_email": "client@example.test",
@@ -337,6 +342,7 @@ class ZapierWorkflowEventTests(unittest.TestCase):
     def test_uncertain_or_failed_capture_does_not_emit_payment_captured(self):
         payment = {
             "id": "payment-1", "milestone_id": self.milestone_id, "project_id": self.project_id,
+            "project_title": "Example project", "milestone_title": "Milestone one",
             "client_id": "client-1", "freelancer_id": "freelancer-1",
             "client_email": "client@example.test", "freelancer_email": "freelancer@example.test",
             "amount": Decimal("25.00"), "currency": "USD ", "status": "capture_pending",
@@ -364,13 +370,15 @@ class ZapierOutboxTests(unittest.IsolatedAsyncioTestCase):
     def _row(self):
         return {
             "id": 7,
-            "event_name": "evidence.submitted",
+            "event_name": "payment.order_created",
             "dedupe_key": "stable-dedupe-key",
             "payload": {"project_id": "p1", "milestone_id": "m1"},
             "attempts": 0,
             "created_at": datetime(2026, 10, 30, 9, 15, tzinfo=timezone.utc),
             "next_attempt_at": datetime.now(timezone.utc) - timedelta(seconds=1),
             "delivery_status": "pending",
+            "smtp_delivered_at": None,
+            "webhook_delivered_at": None,
             "locked_until": None,
             "last_error": None,
         }
@@ -501,6 +509,28 @@ class PayPalWebhookEventTests(unittest.TestCase):
         capture.assert_called_once_with("order-1", "capture-1", Decimal("25.00"), "USD")
         complete.assert_called_once_with("paypal-capture-event-1", True)
         self.assertEqual(deliver.await_count, 1)
+
+    def test_invalid_paypal_signature_cannot_update_payment(self):
+        event = {
+            "id": "forged-capture-event",
+            "event_type": "PAYMENT.CAPTURE.COMPLETED",
+            "resource": {
+                "id": "forged-capture",
+                "status": "COMPLETED",
+                "amount": {"value": "25.00", "currency_code": "USD"},
+                "supplementary_data": {"related_ids": {"order_id": "order-1"}},
+            },
+        }
+        paypal = SimpleNamespace(verify_webhook=AsyncMock(return_value=False))
+        with patch("app.routers.payments.PayPalClient", return_value=paypal), \
+             patch("app.routers.payments.payments.store_webhook") as store, \
+             patch("app.routers.payments.payments.find_capture_by_order") as capture:
+            response = self.client.post("/webhooks/paypal", json=event, headers=self.headers)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "PayPal webhook signature was not verified")
+        store.assert_not_called()
+        capture.assert_not_called()
 
     def test_verified_refund_webhook_still_uses_refund_service_and_outbox_worker(self):
         event = {

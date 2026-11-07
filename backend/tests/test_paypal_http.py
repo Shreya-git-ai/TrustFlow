@@ -5,7 +5,7 @@ import unittest
 from decimal import Decimal
 from unittest.mock import patch
 from urllib.parse import parse_qs
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 
@@ -13,6 +13,23 @@ from app.payments.paypal import PayPalClient
 
 
 class PayPalHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_vercel_production_callbacks_use_canonical_frontend_domain(self):
+        with patch.dict(
+            os.environ,
+            {
+                "VERCEL_ENV": "production",
+                "TRUSTFLOW_FRONTEND_URL": "https://old-frontend.example.test",
+                "PAYPAL_RETURN_URL": "https://old-frontend.example.test/payment-return",
+                "PAYPAL_CANCEL_URL": "https://old-frontend.example.test/payment-cancel",
+                "PAYPAL_SELLER_RETURN_URL": "https://old-frontend.example.test/paypal-onboarding-return",
+            },
+        ):
+            paypal = PayPalClient()
+
+        self.assertEqual(paypal.return_url, "https://trustflow-paypal.vercel.app/payment-return")
+        self.assertEqual(paypal.cancel_url, "https://trustflow-paypal.vercel.app/payment-cancel")
+        self.assertEqual(paypal.seller_return_url, "https://trustflow-paypal.vercel.app/paypal-onboarding-return")
+
     async def test_mocked_oauth_order_authorize_and_capture_requests(self):
         requests = []
         timeouts = []
@@ -43,7 +60,13 @@ class PayPalHttpTests(unittest.IsolatedAsyncioTestCase):
                     body["purchase_units"][0]["amount"],
                     {"currency_code": "EUR", "value": "12.35"},
                 )
-                self.assertEqual(body["application_context"]["return_url"], "https://return.test")
+                self.assertEqual(
+                    body["payment_source"]["paypal"]["experience_context"]["return_url"],
+                    "https://return.test",
+                )
+                self.assertNotIn("payee", body["purchase_units"][0])
+                self.assertNotIn("paypal-auth-assertion", request.headers)
+                self.assertNotIn("paypal-partner-attribution-id", request.headers)
                 return httpx.Response(
                     201,
                     json={
@@ -83,6 +106,14 @@ class PayPalHttpTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
 
+            if request.url.path == "/v2/payments/captures/CAPTURE123/refund":
+                body = json.loads(request.content)
+                self.assertEqual(body["amount"], {"currency_code": "USD", "value": "1.25"})
+                self.assertEqual(body["custom_id"], "PROPOSAL123")
+                self.assertNotIn("paypal-auth-assertion", request.headers)
+                self.assertNotIn("paypal-partner-attribution-id", request.headers)
+                return httpx.Response(201, json={"id": "REFUND123", "status": "COMPLETED"})
+
             self.fail(f"Unexpected mocked provider path: {request.url.path}")
 
         transport = httpx.MockTransport(handler)
@@ -107,6 +138,9 @@ class PayPalHttpTests(unittest.IsolatedAsyncioTestCase):
             capture_response, capture = await paypal.capture_authorization(
                 "AUTH123", Decimal("5.25"), "USD"
             )
+            refund_response, refund = await paypal.refund_capture(
+                "CAPTURE123", Decimal("1.25"), "USD", str(uuid4()), "PROPOSAL123",
+            )
 
         self.assertEqual(order_response.status_code, 201)
         self.assertEqual(order["id"], "ORDER123")
@@ -117,12 +151,14 @@ class PayPalHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(capture_response.status_code, 201)
         self.assertEqual(capture["id"], "CAPTURE123")
-        self.assertEqual(len(requests), 6)  # a fresh OAuth request for each operation
+        self.assertEqual(refund_response.status_code, 201)
+        self.assertEqual(refund["id"], "REFUND123")
+        self.assertEqual(len(requests), 8)  # a fresh OAuth request for each operation
         self.assertTrue(all(timeout == 15.0 for timeout in timeouts))
 
         request_ids = [request.headers["paypal-request-id"] for request in requests if "paypal-request-id" in request.headers]
-        self.assertEqual(len(request_ids), 3)
-        self.assertEqual(len(set(request_ids)), 3)
+        self.assertEqual(len(request_ids), 4)
+        self.assertEqual(len(set(request_ids)), 4)
         for request_id in request_ids:
             UUID(request_id)
 

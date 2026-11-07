@@ -1,10 +1,11 @@
 import unittest
+import os
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.security import get_current_user
+from app.security import allowed_origins, get_current_user
 from app.services import auth
 
 
@@ -80,6 +81,74 @@ class AuthSecurityTests(unittest.TestCase):
         self.client.cookies.set("trustflow_session", "expired-session")
         with patch("app.security.lookup_session", return_value=None):
             response = self.client.get("/auth/me")
+        self.assertEqual(response.status_code, 401)
+
+    def test_vercel_frontend_signup_login_and_session_persist_at_api_alias(self):
+        origin = "https://trustflow-paypal.vercel.app"
+        pending_user = {
+            "id": "u-vercel", "name": "Vercel Client", "email": "vercel@example.test",
+            "role": "client", "email_verified": False,
+        }
+        authenticated_user = {**pending_user, "email_verified": True}
+        session_user = {**authenticated_user, "csrf_token": "csrf-vercel"}
+        client = TestClient(app, base_url=origin)
+        headers = {"origin": origin}
+
+        with patch.dict(os.environ, {
+            "TRUSTFLOW_ENV": "production",
+            "CORS_ORIGINS": origin,
+        }), patch("app.routers.auth.email_delivery_configured", return_value=True), \
+             patch("app.routers.auth.auth.create_pending_user", return_value=(pending_user, "verification-token")), \
+             patch("app.routers.auth.send_verification_email", return_value=True):
+            signup = client.post("/api/auth/signup", headers=headers, json={
+                "name": "Vercel Client", "email": "vercel@example.test",
+                "password": "a sufficiently long password", "role": "client",
+            })
+
+        self.assertEqual(signup.status_code, 201, signup.text)
+        self.assertTrue(signup.json()["verification_required"])
+        self.assertNotIn("set-cookie", signup.headers)
+        with patch.dict(os.environ, {"CORS_ORIGINS": origin}):
+            self.assertEqual(allowed_origins(), {origin})
+
+        with patch.dict(os.environ, {
+            "VERCEL_ENV": "production",
+            "CORS_ORIGINS": origin,
+        }), patch("app.routers.auth.auth.check_login_rate", return_value=True), \
+             patch("app.routers.auth.auth.authenticate", return_value=authenticated_user), \
+             patch("app.routers.auth.auth.clear_login_rate"), \
+             patch("app.routers.auth.auth.create_session", return_value=("opaque-session", "csrf-vercel")), \
+             patch("app.routers.auth.auth.revoke_session"), \
+             patch("app.security.lookup_session", return_value=session_user):
+            login = client.post("/api/auth/login", headers=headers, json={
+                "email": "vercel@example.test", "password": "a sufficiently long password",
+            })
+            self.assertEqual(login.status_code, 200, login.text)
+            cookie = login.headers["set-cookie"].lower()
+            self.assertIn("httponly", cookie)
+            self.assertIn("secure", cookie)
+            self.assertIn("samesite=lax", cookie)
+            self.assertNotIn("domain=", cookie)
+            self.assertNotIn("opaque-session", login.text)
+
+            current = client.get("/api/auth/me")
+            self.assertEqual(current.status_code, 200, current.text)
+            self.assertEqual(current.json()["user"]["email"], "vercel@example.test")
+            self.assertEqual(current.json()["csrf_token"], "csrf-vercel")
+
+            logout = client.post(
+                "/api/auth/logout",
+                headers={**headers, "x-csrf-token": "csrf-vercel"},
+                json={},
+            )
+            self.assertEqual(logout.status_code, 200, logout.text)
+            deletion_cookie = logout.headers["set-cookie"].lower()
+            self.assertIn("httponly", deletion_cookie)
+            self.assertIn("secure", deletion_cookie)
+            self.assertIn("samesite=lax", deletion_cookie)
+
+    def test_api_auth_me_alias_rejects_missing_session(self):
+        response = self.client.get("/api/auth/me")
         self.assertEqual(response.status_code, 401)
 
     def test_logout_requires_csrf_and_revokes_current_session(self):

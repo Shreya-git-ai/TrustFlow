@@ -10,6 +10,7 @@ from uuid import uuid4
 import httpx
 
 from app.observability import log_event, traced
+from app.security import public_frontend_origin
 
 
 class PayPalClient:
@@ -21,17 +22,22 @@ class PayPalClient:
         self.base_url = os.getenv(
             "PAYPAL_BASE_URL", "https://api-m.sandbox.paypal.com"
         ).rstrip("/")
-        self.return_url = os.getenv(
-            "PAYPAL_RETURN_URL", "http://localhost:5173/payment-return"
-        )
-        self.cancel_url = os.getenv(
-            "PAYPAL_CANCEL_URL", "http://localhost:5173/payment-cancel"
-        )
+        frontend_origin = public_frontend_origin()
+        if os.getenv("VERCEL_ENV", "").lower() == "production":
+            self.return_url = f"{frontend_origin}/payment-return"
+            self.cancel_url = f"{frontend_origin}/payment-cancel"
+        else:
+            self.return_url = os.getenv("PAYPAL_RETURN_URL", f"{frontend_origin}/payment-return")
+            self.cancel_url = os.getenv("PAYPAL_CANCEL_URL", f"{frontend_origin}/payment-cancel")
         self.partner_merchant_id = os.getenv("PAYPAL_PARTNER_MERCHANT_ID", "").strip()
         self.attribution_id = os.getenv("PAYPAL_PARTNER_ATTRIBUTION_ID", "").strip()
-        self.seller_return_url = os.getenv(
-            "PAYPAL_SELLER_RETURN_URL",
-            f"{os.getenv('TRUSTFLOW_FRONTEND_URL', 'http://localhost:5173').rstrip('/')}/paypal-onboarding-return",
+        self.seller_return_url = (
+            f"{frontend_origin}/paypal-onboarding-return"
+            if os.getenv("VERCEL_ENV", "").lower() == "production"
+            else os.getenv(
+                "PAYPAL_SELLER_RETURN_URL",
+                f"{frontend_origin}/paypal-onboarding-return",
+            )
         )
 
     @property
@@ -60,6 +66,21 @@ class PayPalClient:
             "PayPal-Auth-Assertion": self._auth_assertion(self.client_id, merchant_id),
         }
         headers["PayPal-Partner-Attribution-Id"] = self.attribution_id
+        if request_id:
+            headers["PayPal-Request-Id"] = request_id
+        return headers
+
+    def _api_headers(
+        self, access_token: str, request_id: str | None = None,
+        payee_merchant_id: str | None = None,
+    ) -> dict[str, str]:
+        """Use standard merchant auth unless a legacy marketplace order has a payee."""
+        if payee_merchant_id:
+            return self._merchant_headers(access_token, payee_merchant_id, request_id)
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
         if request_id:
             headers["PayPal-Request-Id"] = request_id
         return headers
@@ -124,45 +145,47 @@ class PayPalClient:
         payee_merchant_id: str | None = None,
     ) -> tuple[httpx.Response, dict[str, Any]]:
         access_token = await self.get_access_token()
-        if not payee_merchant_id:
-            raise RuntimeError("Freelancer PayPal account is not connected")
+        purchase_unit: dict[str, Any] = {
+            "amount": {
+                "currency_code": currency,
+                "value": f"{amount:.2f}",
+            },
+            "description": "TrustFlow milestone payment",
+        }
+        if payee_merchant_id:
+            purchase_unit["payee"] = {"merchant_id": payee_merchant_id}
         return await self._request(
             "/v2/checkout/orders",
             method="POST",
-            headers=self._merchant_headers(access_token, payee_merchant_id, request_id or str(uuid4())),
+            headers=self._api_headers(access_token, request_id or str(uuid4()), payee_merchant_id),
             json_body={
                 "intent": "AUTHORIZE",
-                "purchase_units": [
-                    {
-                        "amount": {
-                            "currency_code": currency,
-                            "value": f"{amount:.2f}",
-                        },
-                        "description": "TrustFlow milestone payment",
-                        "payee": {"merchant_id": payee_merchant_id},
+                "purchase_units": [purchase_unit],
+                "payment_source": {
+                    "paypal": {
+                        "experience_context": {
+                            "user_action": "PAY_NOW",
+                            "return_url": self.return_url,
+                            "cancel_url": self.cancel_url,
+                        }
                     }
-                ],
-                "application_context": {
-                    "user_action": "PAY_NOW",
-                    "return_url": self.return_url,
-                    "cancel_url": self.cancel_url,
                 },
             },
         )
 
     async def authorize_order(
-        self, order_id: str, payee_merchant_id: str, request_id: str | None = None
+        self, order_id: str, payee_merchant_id: str | None = None, request_id: str | None = None
     ) -> tuple[httpx.Response, dict[str, Any]]:
         access_token = await self.get_access_token()
         return await self._request(
             f"/v2/checkout/orders/{order_id}/authorize",
             method="POST",
-            headers=self._merchant_headers(access_token, payee_merchant_id, request_id or str(uuid4())),
+            headers=self._api_headers(access_token, request_id or str(uuid4()), payee_merchant_id),
         )
 
     async def capture_authorization(
         self, authorization_id: str, amount: Decimal | None, currency: str,
-        payee_merchant_id: str, request_id: str | None = None,
+        payee_merchant_id: str | None = None, request_id: str | None = None,
     ) -> tuple[httpx.Response, dict[str, Any]]:
         access_token = await self.get_access_token()
         capture_body: dict[str, Any] = {}
@@ -174,20 +197,20 @@ class PayPalClient:
         return await self._request(
             f"/v2/payments/authorizations/{authorization_id}/capture",
             method="POST",
-            headers=self._merchant_headers(access_token, payee_merchant_id, request_id or str(uuid4())),
+            headers=self._api_headers(access_token, request_id or str(uuid4()), payee_merchant_id),
             json_body=capture_body,
         )
 
     async def refund_capture(
         self, capture_id: str, amount: Decimal, currency: str, request_id: str,
-        proposal_id: str, payee_merchant_id: str,
+        proposal_id: str, payee_merchant_id: str | None = None,
     ) -> tuple[httpx.Response, dict[str, Any]]:
         access_token = await self.get_access_token()
         return await self._request(
             f"/v2/payments/captures/{capture_id}/refund",
             method="POST",
             headers={
-                **self._merchant_headers(access_token, payee_merchant_id, request_id),
+                **self._api_headers(access_token, request_id, payee_merchant_id),
                 "Prefer": "return=representation",
             },
             json_body={
@@ -196,18 +219,18 @@ class PayPalClient:
             },
         )
 
-    async def get_order(self, order_id: str, payee_merchant_id: str) -> tuple[httpx.Response, dict[str, Any]]:
+    async def get_order(self, order_id: str, payee_merchant_id: str | None = None) -> tuple[httpx.Response, dict[str, Any]]:
         access_token = await self.get_access_token()
         return await self._request(
             f"/v2/checkout/orders/{order_id}",
-            headers=self._merchant_headers(access_token, payee_merchant_id),
+            headers=self._api_headers(access_token, payee_merchant_id=payee_merchant_id),
         )
 
-    async def get_authorization(self, authorization_id: str, payee_merchant_id: str) -> tuple[httpx.Response, dict[str, Any]]:
+    async def get_authorization(self, authorization_id: str, payee_merchant_id: str | None = None) -> tuple[httpx.Response, dict[str, Any]]:
         access_token = await self.get_access_token()
         return await self._request(
             f"/v2/payments/authorizations/{authorization_id}",
-            headers=self._merchant_headers(access_token, payee_merchant_id),
+            headers=self._api_headers(access_token, payee_merchant_id=payee_merchant_id),
         )
 
     async def create_partner_referral(self, email: str, tracking_id: str) -> dict[str, Any]:

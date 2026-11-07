@@ -11,14 +11,37 @@ from app.services.auth import lookup_session
 SESSION_COOKIE = "trustflow_session"
 
 
+def secure_session_cookie() -> bool:
+    return (
+        os.getenv("TRUSTFLOW_ENV", "development").lower() == "production"
+        or os.getenv("VERCEL_ENV", "").lower() in {"production", "preview"}
+    )
+
+
+def public_frontend_origin() -> str:
+    if os.getenv("VERCEL_ENV", "").lower() == "production":
+        return "https://trustflow-paypal.vercel.app"
+    configured = os.getenv("TRUSTFLOW_FRONTEND_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    vercel_host = os.getenv("VERCEL_PROJECT_PRODUCTION_URL") or os.getenv("VERCEL_URL")
+    if vercel_host:
+        return f"https://{vercel_host.strip().rstrip('/')}"
+    if secure_session_cookie():
+        return "https://trustflow-paypal.vercel.app"
+    return "http://localhost:5173"
+
+
 def allowed_origins() -> set[str]:
     origins = {
         item.strip().rstrip("/")
         for item in os.getenv(
-            "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+            "CORS_ORIGINS",
+            "http://localhost:5173,http://127.0.0.1:5173,https://trustflow-paypal.vercel.app",
         ).split(",")
         if item.strip()
     }
+    origins.add("https://trustflow-paypal.vercel.app")
     # Vercel provides these deployment hosts at runtime; allow the browser's
     # same-origin requests for production, preview, and branch deployments.
     for variable in ("VERCEL_URL", "VERCEL_BRANCH_URL", "VERCEL_PROJECT_PRODUCTION_URL"):
@@ -33,7 +56,7 @@ def set_session_cookie(response: Response, token: str) -> None:
         SESSION_COOKIE,
         token,
         httponly=True,
-        secure=os.getenv("TRUSTFLOW_ENV", "development").lower() == "production",
+        secure=secure_session_cookie(),
         samesite="lax",
         path="/",
         max_age=12 * 3600,

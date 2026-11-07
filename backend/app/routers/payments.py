@@ -25,7 +25,7 @@ def _domain(callable_, *args, **kwargs):
 
 def _approval_url(data: dict) -> str | None:
     for item in data.get("links", []) or []:
-        if not isinstance(item, dict) or item.get("rel") != "approve":
+        if not isinstance(item, dict) or item.get("rel") not in {"approve", "payer-action"}:
             continue
         value = item.get("href")
         parsed = urlsplit(value or "")
@@ -65,12 +65,9 @@ async def create_order(milestone_id: str, background_tasks: BackgroundTasks, use
             "status": payment["status"],
         }
     paypal = PayPalClient()
-    if not paypal.marketplace_configured:
-        raise HTTPException(503, "PayPal direct seller payments are not configured. Marketplace partner approval and credentials are required.")
     try:
         response, data = await paypal.create_order(
             payment["amount"], payment["currency"].strip(), payment["create_request_id"],
-            payee_merchant_id=payment["paypal_payee_merchant_id"],
         )
     except Exception as error:
         log_event("error", "payment.order.create.unknown", error=type(error).__name__)

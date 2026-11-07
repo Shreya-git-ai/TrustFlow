@@ -7,6 +7,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, parseaddr
 from urllib.parse import quote
 from app.observability import log_event
+from app.security import public_frontend_origin
 from app.services import auth
 
 
@@ -62,13 +63,7 @@ def _send(to_address: str, subject: str, body: str) -> None:
 
 
 def _frontend_url() -> str:
-    configured = os.getenv("TRUSTFLOW_FRONTEND_URL", "").strip()
-    if configured:
-        return configured.rstrip("/")
-    vercel_host = os.getenv("VERCEL_PROJECT_PRODUCTION_URL") or os.getenv("VERCEL_URL")
-    if vercel_host:
-        return f"https://{vercel_host.rstrip('/')}"
-    return "http://localhost:5173"
+    return public_frontend_origin()
 
 
 def _mark_token_email_sent(mark_sent, token: str, event_name: str) -> None:
@@ -181,7 +176,7 @@ def send_workflow_email(event: str, data: dict) -> bool:
         "milestone_approved": f"{actor} approved “{milestone}” in “{project}”. The client can now continue with the payment step.",
         "milestone_revoked": f"{actor} withdrew approval for “{milestone}” in “{project}”. Sign in to review the latest status.",
         "payment_authorized": f"The client authorized {currency} {amount} for “{milestone}” in “{project}”. PayPal has not captured the payment yet; capture happens after the milestone is approved.",
-        "payment_captured": f"PayPal confirmed the payment for “{milestone}” in “{project}”. The captured amount is {currency} {amount}.",
+        "payment_captured": f"PayPal confirmed the capture for “{milestone}” in “{project}”. The captured amount is {currency} {amount}. This demo processes the capture through the PayPal merchant account configured for TrustFlow and does not automatically pay funds out to the freelancer.",
         "payment_refunded": f"PayPal confirmed a refund of {data.get('refund_amount', amount)} {currency} for “{milestone}” in “{project}”.",
     }
     detail_lines = [f"Project: {project}"]

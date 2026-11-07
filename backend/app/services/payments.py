@@ -40,10 +40,8 @@ def prepare_order(user: dict, milestone_id: str) -> dict:
         raise DomainError(403, "Only the project client can start a payment")
     with transaction() as connection:
         milestone = connection.execute(
-            """SELECT m.*, p.client_id, p.membership_status, p.status AS project_status,
-                      freelancer.paypal_merchant_id AS freelancer_paypal_merchant_id
+            """SELECT m.*, p.client_id, p.membership_status, p.status AS project_status
                FROM milestones m JOIN projects p ON p.id = m.project_id
-               LEFT JOIN users freelancer ON freelancer.id = p.freelancer_id
                WHERE m.id = %s FOR UPDATE OF m, p""",
             (milestone_id,),
         ).fetchone()
@@ -55,16 +53,14 @@ def prepare_order(user: dict, milestone_id: str) -> dict:
             raise DomainError(409, "Payments are unavailable for a cancelled project")
         if milestone["agreement_status"] != "accepted":
             raise DomainError(409, "The freelancer must accept the milestone terms before payment")
-        if not milestone["freelancer_paypal_merchant_id"]:
-            raise DomainError(409, "The freelancer must connect an eligible PayPal receiving account before checkout")
         row = connection.execute("SELECT * FROM payments WHERE milestone_id = %s FOR UPDATE", (milestone_id,)).fetchone()
         if row is None:
             row = connection.execute(
                 """INSERT INTO payments(milestone_id, created_by, amount, currency, status,
-                           create_request_id, authorize_request_id, paypal_payee_merchant_id)
-                   VALUES (%s, %s, %s, %s, 'created', %s, %s, %s)
+                           create_request_id, authorize_request_id)
+                   VALUES (%s, %s, %s, %s, 'created', %s, %s)
                    ON CONFLICT (milestone_id) DO NOTHING RETURNING *""",
-                (milestone_id, user["id"], milestone["amount"], milestone["currency"], str(uuid4()), str(uuid4()), milestone["freelancer_paypal_merchant_id"]),
+                (milestone_id, user["id"], milestone["amount"], milestone["currency"], str(uuid4()), str(uuid4())),
             ).fetchone()
             if row is None:
                 row = connection.execute("SELECT * FROM payments WHERE milestone_id = %s FOR UPDATE", (milestone_id,)).fetchone()
@@ -72,16 +68,13 @@ def prepare_order(user: dict, milestone_id: str) -> dict:
                 _audit(connection, "payment.initiated", user, project_id=milestone["project_id"], milestone_id=milestone_id, payment_id=row["id"], details={"amount": str(row["amount"]), "currency": row["currency"]})
         elif row["status"] not in {"created", "buyer_approved"}:
             raise DomainError(409, "Payment has already moved beyond order creation")
-        elif row["paypal_payee_merchant_id"] and row["paypal_payee_merchant_id"] != milestone["freelancer_paypal_merchant_id"]:
-            raise DomainError(409, "The freelancer PayPal account changed after this payment was started. Contact support before continuing.")
         if row["paypal_order_id"]:
-            if not row["paypal_payee_merchant_id"]:
-                raise DomainError(409, "This payment was created before freelancer payout routing was enabled. Create a new milestone payment.")
             return dict(row)
-        if not row["paypal_payee_merchant_id"]:
+        # A row with no PayPal order has no provider-side marketplace routing to preserve.
+        if row.get("paypal_payee_merchant_id"):
             row = connection.execute(
-                "UPDATE payments SET paypal_payee_merchant_id = %s WHERE id = %s RETURNING *",
-                (milestone["freelancer_paypal_merchant_id"], row["id"]),
+                "UPDATE payments SET paypal_payee_merchant_id = NULL WHERE id = %s RETURNING *",
+                (row["id"],),
             ).fetchone()
         return dict(row)
 
