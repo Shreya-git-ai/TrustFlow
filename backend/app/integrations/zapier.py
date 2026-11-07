@@ -34,9 +34,8 @@ async def send_event(
 ) -> DeliveryResult:
     """Send a small event envelope to a configured Zapier Catch Hook.
 
-    Workflow events are persisted in the outbox before delivery. Auth email
-    links use a separate dedicated hook and are sent directly, never persisted
-    in the workflow outbox.
+    Non-email workflow and support-automation events are persisted in the outbox
+    before delivery. User-facing email notifications are delivered over SMTP.
     """
     target_url = (webhook_url or os.getenv("ZAPIER_WEBHOOK_URL", "")).strip()
     if not target_url:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -9,19 +10,20 @@ from uuid import NAMESPACE_URL, uuid5
 
 from psycopg.types.json import Jsonb
 
-from app.db.repository import transaction
+from app.db.repository import read_connection, transaction
 from app.integrations.zapier import send_event
 from app.observability import log_event
+from app.services.email import is_workflow_email_event, send_workflow_email
 
 
 def event_recipient_email(connection, user_id: str) -> str | None:
-    """Load only the intended notification recipient's email for Zapier delivery."""
+    """Load the intended user's email for a TrustFlow SMTP notification."""
     row = connection.execute("SELECT email FROM users WHERE id = %s", (user_id,)).fetchone()
     return row["email"] if row else None
 
 
 def event_recipient_name(connection, user_id: str) -> str | None:
-    """Load the intended notification recipient's display name for Zapier."""
+    """Load the intended user's display name for a TrustFlow SMTP notification."""
     row = connection.execute("SELECT display_name FROM users WHERE id = %s", (user_id,)).fetchone()
     return row["display_name"] if row else None
 
@@ -39,6 +41,63 @@ def enqueue_event(connection, event_name: str, data: dict, *, idempotency_key: s
         "INSERT INTO integration_outbox(event_name, dedupe_key, payload) VALUES (%s, %s, %s) ON CONFLICT (dedupe_key) DO NOTHING",
         (event_name, dedupe_key, Jsonb(data)),
     )
+
+
+def _workflow_email_context(event: str, data: dict) -> dict:
+    """Fill names and destinations for older outbox rows as well as new events."""
+    if (data.get("recipient_email") and data.get("recipient_name") and data.get("actor_name")
+            and data.get("project_title") and (data.get("milestone_title") or not data.get("milestone_id"))):
+        return data
+    project_id = data.get("project_id")
+    milestone_id = data.get("milestone_id")
+    if not project_id and not milestone_id:
+        return data
+    with read_connection() as connection:
+        if milestone_id:
+            row = connection.execute(
+                """SELECT project.id AS project_id, project.title AS project_title,
+                          project.invited_email, client.email AS client_email,
+                          client.display_name AS client_name, freelancer.email AS freelancer_email,
+                          freelancer.display_name AS freelancer_name, milestone.title AS milestone_title
+                   FROM milestones milestone JOIN projects project ON project.id = milestone.project_id
+                   JOIN users client ON client.id = project.client_id
+                   LEFT JOIN users freelancer ON freelancer.id = project.freelancer_id
+                   WHERE milestone.id = %s""",
+                (milestone_id,),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """SELECT project.id AS project_id, project.title AS project_title,
+                          project.invited_email, client.email AS client_email,
+                          client.display_name AS client_name, freelancer.email AS freelancer_email,
+                          freelancer.display_name AS freelancer_name, NULL::text AS milestone_title
+                   FROM projects project JOIN users client ON client.id = project.client_id
+                   LEFT JOIN users freelancer ON freelancer.id = project.freelancer_id
+                   WHERE project.id = %s""",
+                (project_id,),
+            ).fetchone()
+    if row is None:
+        return data
+    context = dict(data)
+    context.setdefault("project_title", row["project_title"])
+    context.setdefault("project_name", row["project_title"])
+    if row["milestone_title"]:
+        context.setdefault("milestone_title", row["milestone_title"])
+    context.setdefault("client_name", row["client_name"])
+    context.setdefault("freelancer_name", row["freelancer_name"] or "")
+    if event in {"project.invited", "project.invitation_resent", "project.invitation_cancelled", "milestone.created", "milestone.updated"}:
+        context["recipient_email"] = context.get("recipient_email") or row["freelancer_email"] or row["invited_email"]
+        context["recipient_name"] = context.get("recipient_name") or row["freelancer_name"] or ""
+        context["actor_name"] = context.get("actor_name") or row["client_name"] or "A TrustFlow client"
+    elif event in {"project.invitation_accepted", "project.invitation_declined", "milestone.agreement_accepted", "milestone.agreement_changes_requested", "evidence.submitted", "assessment.completed", "assessment.failed"}:
+        context["recipient_email"] = context.get("recipient_email") or row["client_email"]
+        context["recipient_name"] = context.get("recipient_name") or row["client_name"] or ""
+        context["actor_name"] = context.get("actor_name") or row["freelancer_name"] or "Your freelancer"
+    else:
+        context["recipient_email"] = context.get("recipient_email") or row["freelancer_email"]
+        context["recipient_name"] = context.get("recipient_name") or row["freelancer_name"] or ""
+        context["actor_name"] = context.get("actor_name") or row["client_name"] or "Your client"
+    return context
 
 
 def _frontend_origin() -> tuple[str, str] | None:
@@ -82,12 +141,12 @@ def milestone_review_url(project_id: str, milestone_id: str) -> str | None:
 
 
 async def deliver_pending(limit: int = 10) -> int:
-    if not os.getenv("ZAPIER_WEBHOOK_URL", "").strip():
-        return 0
+    webhook_configured = bool(os.getenv("ZAPIER_WEBHOOK_URL", "").strip())
     now = datetime.now(timezone.utc)
     with transaction() as connection:
         rows = connection.execute(
-            """SELECT id, event_name, dedupe_key, payload, attempts, created_at FROM integration_outbox
+            """SELECT id, event_name, dedupe_key, payload, attempts, created_at,
+                      smtp_delivered_at, webhook_delivered_at FROM integration_outbox
                WHERE delivery_status = 'pending' AND next_attempt_at <= %s
                  AND (locked_until IS NULL OR locked_until < %s)
                ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED""",
@@ -98,25 +157,57 @@ async def deliver_pending(limit: int = 10) -> int:
 
     delivered = 0
     for row in rows:
-        try:
-            event_seed = row["dedupe_key"] or f"legacy-outbox-row:{row['id']}"
-            event_id = str(uuid5(NAMESPACE_URL, f"trustflow:{row['event_name']}:{event_seed}"))
-            occurred_at = row["created_at"]
-            if occurred_at.tzinfo is None:
-                occurred_at = occurred_at.replace(tzinfo=timezone.utc)
-            occurred_at = occurred_at.astimezone(timezone.utc)
-            result = await send_event(
-                row["event_name"],
-                row["payload"],
-                event_id=event_id,
-                occurred_at=occurred_at,
-            )
-        except Exception as error:  # delivery must never change the transaction result
-            result = None
-            log_event("warning", "integration.outbox.error", error=type(error).__name__)
+        smtp_needed = is_workflow_email_event(row["event_name"])
+        # Keep optional business automations, but never pass SMTP recipients to
+        # Zapier for events that now send user-facing email directly.
+        webhook_needed = True
+        smtp_done = not smtp_needed or row["smtp_delivered_at"] is not None
+        webhook_done = row["webhook_delivered_at"] is not None or (smtp_needed and not webhook_configured)
+        failure = None
+        if smtp_needed and not smtp_done:
+            try:
+                payload = _workflow_email_context(row["event_name"], dict(row["payload"]))
+                await asyncio.to_thread(send_workflow_email, row["event_name"], payload)
+                smtp_done = True
+                with transaction() as connection:
+                    connection.execute(
+                        "UPDATE integration_outbox SET smtp_delivered_at = NOW() WHERE id = %s",
+                        (row["id"],),
+                    )
+            except Exception as error:
+                failure = type(error).__name__
+                log_event("warning", "email.outbox.error", eventName=row["event_name"], error=failure)
+        if webhook_needed and webhook_configured and not webhook_done:
+            try:
+                event_seed = row["dedupe_key"] or f"legacy-outbox-row:{row['id']}"
+                event_id = str(uuid5(NAMESPACE_URL, f"trustflow:{row['event_name']}:{event_seed}"))
+                occurred_at = row["created_at"]
+                if occurred_at.tzinfo is None:
+                    occurred_at = occurred_at.replace(tzinfo=timezone.utc)
+                occurred_at = occurred_at.astimezone(timezone.utc)
+                webhook_payload = dict(row["payload"])
+                if smtp_needed:
+                    for field in ("recipient_email", "recipient_emails", "client_email", "freelancer_email", "workspace_url"):
+                        webhook_payload.pop(field, None)
+                result = await send_event(
+                    row["event_name"], webhook_payload,
+                    event_id=event_id, occurred_at=occurred_at,
+                )
+                if not result.delivered:
+                    failure = failure or result.error or "Zapier delivery failed"
+                else:
+                    webhook_done = True
+                    with transaction() as connection:
+                        connection.execute(
+                            "UPDATE integration_outbox SET webhook_delivered_at = NOW() WHERE id = %s",
+                            (row["id"],),
+                        )
+            except Exception as error:  # delivery must never change the transaction result
+                failure = failure or type(error).__name__
+                log_event("warning", "integration.outbox.error", eventName=row["event_name"], error=type(error).__name__)
         attempts = row["attempts"] + 1
         with transaction() as connection:
-            if result and result.delivered:
+            if smtp_done and webhook_done and not failure:
                 connection.execute(
                     """UPDATE integration_outbox SET delivery_status = 'delivered', attempts = %s,
                        delivered_at = NOW(), locked_until = NULL, last_error = NULL WHERE id = %s""",
@@ -125,10 +216,9 @@ async def deliver_pending(limit: int = 10) -> int:
                 delivered += 1
             else:
                 delay_seconds = min(3600, 15 * (2 ** min(attempts - 1, 8)))
-                last_error = result.error if result else "Zapier delivery failed unexpectedly"
                 connection.execute(
                     """UPDATE integration_outbox SET attempts = %s, next_attempt_at = %s,
                        locked_until = NULL, last_error = %s WHERE id = %s""",
-                    (attempts, datetime.now(timezone.utc) + timedelta(seconds=delay_seconds), last_error[:240], row["id"]),
+                    (attempts, datetime.now(timezone.utc) + timedelta(seconds=delay_seconds), (failure or "Delivery pending")[0:240], row["id"]),
                 )
     return delivered

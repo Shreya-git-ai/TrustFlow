@@ -4,7 +4,6 @@ import base64
 import binascii
 import ipaddress
 import json
-import os
 from decimal import Decimal
 from urllib.parse import urlsplit
 
@@ -16,7 +15,6 @@ from app.agent.providers.gemini_provider import GeminiProvider
 from app.schemas.assessment import AssessmentInput, CriterionInput
 from app.security import get_current_user, require_csrf, set_session_cookie
 from app.services import auth, storage, workflow
-from app.services.email import send_project_invitation_cancelled_email, send_project_invitation_email
 from app.services.events import deliver_pending
 
 router = APIRouter(tags=["workflow"])
@@ -110,14 +108,6 @@ def create_project(body: ProjectBody, background_tasks: BackgroundTasks, user: d
         raise HTTPException(422, "Currency must be a 3-letter uppercase code")
     result = _domain(workflow.create_project, user, body.title, body.description, body.currency, body.freelancer_email.strip().lower())
     background_tasks.add_task(deliver_pending)
-    if not os.getenv("ZAPIER_WEBHOOK_URL", "").strip():
-        background_tasks.add_task(
-            send_project_invitation_email,
-            body.freelancer_email.strip().lower(),
-            "",
-            user.get("name", ""),
-            body.title.strip(),
-        )
     return result
 
 
@@ -143,11 +133,6 @@ def decline_invitation(project_id: str, background_tasks: BackgroundTasks, user:
 @router.post("/projects/{project_id}/invitation/cancel")
 def cancel_invitation(project_id: str, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
     result = _domain(workflow.cancel_project_invitation, user, project_id)
-    if not os.getenv("ZAPIER_WEBHOOK_URL", "").strip():
-        background_tasks.add_task(
-            send_project_invitation_cancelled_email,
-            result["invited_email"], user.get("name", ""), result["title"],
-        )
     background_tasks.add_task(deliver_pending)
     return {"id": result["id"], "membership_status": result["membership_status"]}
 
@@ -155,11 +140,6 @@ def cancel_invitation(project_id: str, background_tasks: BackgroundTasks, user: 
 @router.post("/projects/{project_id}/invitation/resend", status_code=202)
 def resend_invitation(project_id: str, background_tasks: BackgroundTasks, user: dict = Depends(require_csrf)):
     invitation = _domain(workflow.resend_project_invitation, user, project_id)
-    if not os.getenv("ZAPIER_WEBHOOK_URL", "").strip():
-        background_tasks.add_task(
-            send_project_invitation_email,
-            invitation["invited_email"], "", invitation.get("client_name", ""), invitation["title"],
-        )
     background_tasks.add_task(deliver_pending)
     return {"sent": True}
 

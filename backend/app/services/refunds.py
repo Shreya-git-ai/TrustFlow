@@ -297,7 +297,8 @@ def record_paypal_refund(
     with transaction() as connection:
         payment = connection.execute(
             """SELECT payment.*, milestone.project_id, milestone.title AS milestone_title,
-                      project.title AS project_title, client.email AS client_email
+                      project.title AS project_title, client.email AS client_email,
+                      client.display_name AS recipient_name
                FROM payments payment
                JOIN milestones milestone ON milestone.id = payment.milestone_id
                JOIN projects project ON project.id = milestone.project_id
@@ -411,6 +412,11 @@ def record_paypal_refund(
                 "order_id": payment["paypal_order_id"],
                 "payment_id": str(payment["id"]),
                 "recipient_email": payment["client_email"],
+                "recipient_name": payment["recipient_name"],
+                "project_id": str(payment["project_id"]),
+                "project_title": payment["project_title"],
+                "milestone_id": str(payment["milestone_id"]),
+                "milestone_title": payment["milestone_title"],
                 "proposal_id": str(proposal_id) if proposal_id else None,
                 "refund_amount": f"{amount:.2f}",
                 "cumulative_refunded_amount": f"{completed_amount:.2f}",

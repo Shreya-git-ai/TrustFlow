@@ -1,6 +1,6 @@
 # TrustFlow workflow events and Zapier
 
-TrustFlow writes business events to its PostgreSQL outbox in the same transaction as the associated evidence, assessment, decision, payment, or refund update. A separate worker sends those events to Zapier. Zapier is a notification/automation destination; TrustFlow remains the source of truth and Zapier cannot approve milestones or change payment state.
+TrustFlow writes business events to its PostgreSQL outbox in the same transaction as the associated evidence, assessment, decision, payment, or refund update. The worker sends user-facing notification emails through TrustFlow's SMTP service and can send non-email automation events to Zapier. TrustFlow remains the source of truth; Zapier cannot approve milestones or change payment state.
 
 ## Event envelope
 
@@ -12,7 +12,6 @@ Every delivered event uses this envelope:
   "event_type": "evidence.submitted",
   "event_id": "stable-event-uuid",
   "occurred_at": "2026-10-30T12:34:56Z",
-  "recipient_email": "recipient@example.com",
   "project_id": "<project UUID>",
   "milestone_id": "<milestone UUID>",
   "data": {
@@ -22,7 +21,7 @@ Every delivered event uses this envelope:
 }
 ```
 
-Event-specific fields are available both at the top level (for easier Zapier field mapping) and under `data` for compatibility with existing consumers.
+Event-specific fields are available both at the top level (for easier Zapier field mapping) and under `data` for compatibility with existing consumers. For events that generate email, recipient addresses are removed from the Zapier copy; TrustFlow sends the email itself over SMTP.
 
 `event_id` is stable when the same logical event is retried. The outbox records the event creation timestamp and reuses it for delivery retries. Delivery is at least once: if Zapier receives a request but its response is lost, the outbox may send it again. Use `event_id` as a downstream deduplication key when the Zap writes to a system that supports idempotency.
 
@@ -32,17 +31,17 @@ Milestone links use the configured `TRUSTFLOW_FRONTEND_URL` and open the project
 
 | Event | Recipient IDs | Event data |
 |---|---|---|
-| `project.invited` | Freelancer | `recipient_email` and `display_name` (included when Zapier is configured), `project_title` / `project_name`, `project_id`, `client_id`, `workspace_url` |
-| `milestone.created` | Freelancer | `recipient_email` and `display_name` (included when Zapier is configured), `project_title` / `project_name`, `project_id`, `milestone_id`, `milestone_title`, `client_id`, `freelancer_id`, `review_url` |
-| `milestone.updated` | Freelancer | `recipient_email` and `display_name` (included when Zapier is configured), `project_title` / `project_name`, `project_id`, `milestone_id`, `milestone_title`, `client_id`, `freelancer_id`, `review_url` |
-| `evidence.submitted` | `client_id` | `recipient_email`, `freelancer_id`, `project_id`, `milestone_id`, `evidence_revision`, `file_attached`, `review_url` |
-| `assessment.completed` | `client_id` | `recipient_email`, `project_id`, `milestone_id`, `assessment_id`, `evidence_revision`, `overall_result`, `all_met`, `criterion_summary` (criterion IDs and result only), `blocker_count`, `stale`, `advisory`, `client_approval_required`, `review_url` |
-| `revision.requested` | `freelancer_id` | `recipient_email`, `client_id`, `project_id`, `milestone_id`, `evidence_revision`, `assessment_id`, `review_url` |
-| `milestone.approved` | `freelancer_id` | `recipient_email`, `client_id`, `project_id`, `milestone_id`, `evidence_revision`, `assessment_id`, `review_url` |
-| `payment.captured` | Client and freelancer | `client_email`, `freelancer_email`, `client_id`, `freelancer_id`, `payment_id`, `project_id`, `milestone_id`, `capture_id`, `amount`, `currency`, confirmed `status`, `review_url` |
-| `PAYMENT.CAPTURE.REFUNDED` | `recipient_email` is the client | `refund_id`, `capture_id`, `payment_id`, `proposal_id`, `refund_amount`, `cumulative_refunded_amount`, `currency`, and optional Zendesk/Slack references |
+| `project.invited` | Freelancer | `project_title` / `project_name`, `project_id`, `client_id`, `workspace_url` |
+| `milestone.created` | Freelancer | `project_title` / `project_name`, `project_id`, `milestone_id`, `milestone_title`, `amount`, `currency`, `review_url` |
+| `milestone.updated` | Freelancer | `project_title` / `project_name`, `project_id`, `milestone_id`, `milestone_title`, `amount`, `currency`, `review_url` |
+| `evidence.submitted` | `client_id` | `freelancer_id`, `project_id`, `milestone_id`, `evidence_revision`, `file_attached`, `review_url` |
+| `assessment.completed` | `client_id` | `project_id`, `milestone_id`, `assessment_id`, `evidence_revision`, `overall_result`, `all_met`, `criterion_summary` (criterion IDs and result only), `blocker_count`, `stale`, `advisory`, `client_approval_required`, `review_url` |
+| `revision.requested` | `freelancer_id` | `client_id`, `project_id`, `milestone_id`, `evidence_revision`, `assessment_id`, `review_url` |
+| `milestone.approved` | `freelancer_id` | `client_id`, `project_id`, `milestone_id`, `evidence_revision`, `assessment_id`, `review_url` |
+| `payment.captured` | Client and freelancer | `client_id`, `freelancer_id`, `payment_id`, `project_id`, `milestone_id`, `capture_id`, `amount`, `currency`, confirmed `status`, `review_url` |
+| `PAYMENT.CAPTURE.REFUNDED` | Client | `refund_id`, `capture_id`, `payment_id`, `proposal_id`, `refund_amount`, `cumulative_refunded_amount`, `currency`, and optional Zendesk/Slack references |
 
-The outbox contains no evidence text, uploaded file contents, Gemini prompts or quotes, PayPal access tokens, or user names. For email notifications, each event includes only the address of its intended recipient; `payment.captured` includes both project members' addresses. These addresses are delivered to the Zapier account configured by the project operator, so restrict access to that Zapier workspace and use test accounts during setup. Assessment summaries intentionally include only criterion IDs and verdicts, not criterion wording or the model's private reasoning.
+For email-triggering events, the Zapier copy omits email addresses and invitation URLs that contain an email address. It also contains no evidence text, uploaded file contents, Gemini prompts or quotes, or PayPal access tokens. Some event display names remain available for non-email automations. Assessment summaries include only criterion IDs and verdicts, not criterion wording or the model's private reasoning. SMTP recipient addresses stay in the backend delivery path.
 
 `assessment.completed` means that an assessment report was successfully persisted. Its `advisory` field is `true`; `client_approval_required` is also `true`. Neither `all_met: true` nor any other assessment field means the milestone was approved. The client must still explicitly approve it in TrustFlow.
 
@@ -66,69 +65,68 @@ Zapier currently documents Webhooks by Zapier Catch Hook as unavailable on its F
 
 For each Zap, choose **Webhooks by Zapier → Catch Hook**, use the combined hook URL above, and add a Filter step for the exact event name. Zapier's [Catch Hook guide](https://help.zapier.com/hc/en-us/articles/8496288690317-Trigger-Zap-workflows-from-webhooks) describes trigger setup and testing.
 
-To send email, add **Email by Zapier → Send Outbound Email**, or use an account you control through Gmail, Outlook, or SMTP. Map the event's recipient field into **To**. During testing, use project accounts whose email addresses lead to test inboxes. Email actions send real messages when tested. Zapier currently documents Email by Zapier limits of 5 emails per account per day on Free/Trial and 10 per account per hour on paid plans; for Free/Trial action tests, delivery is directed to the Zapier account email. Check the current [Email by Zapier setup and limits](https://help.zapier.com/hc/en-us/articles/8496305915917-Send-emails-in-Zaps) before using it for live notifications.
+Do not add email actions to these Zaps. TrustFlow creates event-specific messages and sends them through the configured SMTP server. Use Zapier for support-system, chat, or other non-email actions.
 
 ### 1. Evidence submitted → notify the client
 
 - **Filter:** `event` exactly equals `evidence.submitted`.
-- **Map:** `data.recipient_email`, `data.project_id`, `data.milestone_id`, `data.evidence_revision`, and `data.review_url`.
-- **Action:** Send an email saying a new evidence revision is ready for review, with the milestone link. Do not include the evidence itself.
-- **Safe test:** Submit non-sensitive sample evidence in a test project whose client account uses a test inbox; verify the email and authenticated milestone link.
+- **Map:** `data.project_id`, `data.milestone_id`, `data.evidence_revision`, and `data.review_url`.
+- **Action:** Use a non-email action if needed. TrustFlow emails the client that a new evidence revision is ready; the evidence itself is never sent by email.
+- **Safe test:** Submit sample evidence in a test project and verify the SMTP message and authenticated milestone link.
 
 ### Project invitation → notify the freelancer
 
 - **Filter:** `event` exactly equals `project.invited`.
-- **Map:** `data.recipient_email`, `data.project_title`, `data.project_id`, and `data.workspace_url`.
-- **Action:** Send an invitation email with the workspace link. The freelancer signs in and accepts the invite in their workspace.
-- **Safe test:** Create a synthetic test project for a freelancer account whose email reaches a test inbox.
-- When `ZAPIER_WEBHOOK_URL` is set, the backend queues this event for Zapier and skips direct SMTP invitation delivery to avoid duplicate emails. Without a hook URL, it uses SMTP if configured. The invitation remains available in the freelancer's workspace either way.
+- **Map:** `data.project_title`, `data.project_id`, and `data.workspace_url`.
+- **Action:** TrustFlow sends the invitation email through SMTP. The freelancer signs in and accepts the invite in their workspace.
+- **Safe test:** Create a synthetic project for a test freelancer and verify the TrustFlow invitation message.
 
 ### Milestone created → notify the freelancer
 
 - **Filter:** `event` exactly equals `milestone.created`.
-- **Map:** `data.recipient_email`, `data.milestone_title`, `data.project_id`, and `data.review_url`.
-- **Action:** Tell the freelancer the client added milestone terms and link to the authenticated milestone view.
-- **Safe test:** Add a synthetic milestone to a test project and verify the email goes to the assigned freelancer's test inbox.
+- **Map:** `data.milestone_title`, `data.project_id`, and `data.review_url`.
+- **Action:** TrustFlow emails the freelancer the milestone title, amount, and authenticated milestone link.
+- **Safe test:** Add a synthetic milestone and verify the TrustFlow message reaches the freelancer's test inbox.
 
 ### Milestone terms updated → notify the freelancer
 
 - **Filter:** `event` exactly equals `milestone.updated`.
-- **Map:** `data.recipient_email`, `data.milestone_title`, and `data.review_url`.
+- **Map:** `data.milestone_title` and `data.review_url`.
 - **Action:** Summarize that the client changed milestone terms and link to the current terms in TrustFlow.
 - **Safe test:** Edit a synthetic milestone before evidence has been submitted.
 
 ### 2. Assessment completed → notify the client
 
 - **Filter:** `event` exactly equals `assessment.completed`. Optionally branch on `data.stale` so stale results are clearly labeled or suppressed.
-- **Map:** `data.recipient_email`, `data.overall_result`, `data.criterion_summary`, `data.blocker_count`, `data.stale`, `data.advisory`, `data.client_approval_required`, and `data.review_url`.
+- **Map:** `data.overall_result`, `data.criterion_summary`, `data.blocker_count`, `data.stale`, `data.advisory`, `data.client_approval_required`, and `data.review_url`.
 - **Action:** Send the summary and link. State that the report is advisory and the client must make the decision in TrustFlow. Do not present the result as an approval.
 - **Safe test:** Submit test evidence, run an assessment, and verify the test inbox receives an advisory message. No evidence text or model prompt is sent to Zapier.
 
 ### 3. Revision requested → notify the freelancer
 
 - **Filter:** `event` exactly equals `revision.requested`.
-- **Map:** `data.recipient_email`, `data.project_id`, `data.milestone_id`, `data.evidence_revision`, and `data.review_url`.
-- **Action:** Email the freelancer that a revision was requested and link to TrustFlow to read the feedback. The feedback note itself is intentionally not sent to Zapier.
-- **Safe test:** Request a revision on a test project whose freelancer account uses a test inbox; confirm the email link opens for that freelancer and not an unrelated account.
+- **Map:** `data.project_id`, `data.milestone_id`, `data.evidence_revision`, and `data.review_url`.
+- **Action:** TrustFlow emails the freelancer about the requested revision and links to TrustFlow to read feedback. The feedback note itself is not sent to Zapier.
+- **Safe test:** Request a revision on a test project and confirm the SMTP email links to the correct milestone.
 
 ### 4. Milestone approved → notify the freelancer
 
 - **Filter:** `event` exactly equals `milestone.approved`.
-- **Map:** `data.recipient_email`, `data.project_id`, `data.milestone_id`, `data.evidence_revision`, and `data.review_url`.
-- **Action:** Email the freelancer that the client approved this revision. Do not use the Zap to initiate capture or change TrustFlow approval/payment state.
-- **Safe test:** Approve a passing test milestone as its client and confirm the test inbox receives the email only after approval is persisted.
+- **Map:** `data.project_id`, `data.milestone_id`, `data.evidence_revision`, and `data.review_url`.
+- **Action:** TrustFlow emails the freelancer that the client approved this revision. Do not use the Zap to initiate capture or change TrustFlow approval/payment state.
+- **Safe test:** Approve a passing test milestone and confirm the TrustFlow email arrives only after approval is persisted.
 
 ### 5. Payment captured → notify parties or update a tracker
 
 - **Filter:** `event` exactly equals `payment.captured` and `data.status` equals `captured`.
-- **Map:** `data.client_email`, `data.freelancer_email`, `data.payment_id`, `data.project_id`, `data.milestone_id`, `data.amount`, `data.currency`, `data.capture_id`, and `data.review_url`.
-- **Action:** Add two email actions: one to `client_email`, one to `freelancer_email`. Treat this as a confirmed capture notice, not a payout confirmation; TrustFlow does not split or pay funds out to freelancers.
-- **Safe test:** Use a PayPal Sandbox buyer account and test project with controlled test inboxes. Confirm no email arrives while capture is uncertain and both inboxes receive one only after PayPal confirms capture.
+- **Map:** `data.payment_id`, `data.project_id`, `data.milestone_id`, `data.amount`, `data.currency`, `data.capture_id`, and `data.review_url`.
+- **Action:** TrustFlow emails both project members after a confirmed capture. Treat this as a capture notice, not a payout confirmation; TrustFlow does not split or pay funds out to freelancers.
+- **Safe test:** Use a PayPal Sandbox buyer account and confirm neither member receives a message while capture is uncertain.
 
 ### 6. Refund completed → retain the current support workflow
 
 - **Filter:** `event` exactly equals `PAYMENT.CAPTURE.REFUNDED`.
-- **Optional email action:** Map `data.recipient_email` to an Email by Zapier, Gmail, Outlook, or SMTP action to notify the client that the refund was confirmed.
+- TrustFlow emails the client after the verified refund completion webhook. Keep the Zap focused on ticket or Slack actions.
 - **Zendesk mapping:** If `data.zendesk_ticket_id` is present, add an internal note with the refund ID and amount and set the ticket to **Solved**. Solved tickets can later be closed by Zendesk's configured process; a closed ticket cannot be reopened.
 - **Slack mapping:** If `data.slack_channel_id` and `data.slack_thread_ts` are present, reply to that thread with the refund confirmation and add the `white_check_mark` reaction. Slack threads do not have a ticket status to close.
 - **Safe test:** Refund a PayPal Sandbox capture and wait for the signature-verified `PAYMENT.CAPTURE.REFUNDED` webhook. Do not test by posting a forged payload to the public PayPal webhook route.
@@ -168,17 +166,9 @@ If no Zendesk ticket ID is attached, `data.ticket_lookup_key` is the PayPal capt
 ## Manual end-to-end test
 
 1. Create or choose a test client account and test freelancer account with inboxes you control. Create a test project and milestone between them.
-2. In Zapier, turn on one Zap at a time. Use **Catch Hook → Filter by exact `event` → Email action**. For evidence, assessment, revision, approval, and refund events, map `data.recipient_email` to **To**. For captured payments, use two email actions mapped to `data.client_email` and `data.freelancer_email`.
-3. Use the TrustFlow frontend to trigger that event: create a project for an invitation, submit evidence, run assessment, request revision, approve an eligible assessment, or complete a PayPal Sandbox capture. Refund testing requires a Sandbox refund and the verified PayPal webhook. Do not send forged webhook requests.
+2. In Zapier, turn on one non-email Zap at a time. Use **Catch Hook → Filter by exact `event` → support or chat action**. No email action is needed; TrustFlow sends those messages directly through SMTP.
+3. Use the TrustFlow frontend to trigger the event: create a project, submit evidence, run an assessment, request a revision, approve an eligible assessment, or complete a PayPal Sandbox capture. Refund testing requires a Sandbox refund and the verified PayPal webhook. Do not send forged webhook requests.
 4. If delivery is queued, run `../venv/bin/python scripts/deliver_events.py` from `backend/` to drain due events. Check the Zap's run history and the controlled inboxes.
-5. Verify each email has the expected recipient and event, uses the authenticated `review_url`, and contains no evidence text or private feedback. Test pending/uncertain capture and confirm it sends no payment-captured email.
+5. Confirm the TrustFlow emails have the expected recipient and event, use the authenticated `review_url`, and contain no evidence text or private feedback. Test pending/uncertain capture and confirm it sends no payment-captured email.
 
-Zapier's action test can send a real email. During early setup, map **To** to your own test inbox; only switch to the dynamic recipient field after confirming the event data and test accounts are correct.
-
-### Optional auth email delivery through a dedicated Zap
-
-SMTP is the preferred channel for verification and password reset. If SMTP is unavailable, configure a separate Zapier Catch Hook URL as `ZAPIER_AUTH_WEBHOOK_URL` on the backend API. Do not reuse or combine it with `ZAPIER_WEBHOOK_URL`: auth events carry one-time bearer links.
-
-The auth hook sends `auth.email_verification` and `auth.password_reset` envelopes with `data.recipient_email`, `data.display_name`, `data.action_url`, and `data.expires_minutes`. Create one private Zap with a Catch Hook trigger and an Email action that sends `action_url` to `recipient_email`. The message can use the event name to say whether the link confirms the email or resets the password.
-
-Zapier's run history will contain the one-time link until it expires (24 hours for verification, 30 minutes for reset). Restrict this dedicated Zap to trusted workspace members and never send the link to Slack, Sheets, or other storage steps. These auth messages are sent directly and are not stored in the workflow outbox. If Zapier or the email action fails, the user can request another link.
+Signup verification and password-reset links are also sent directly through SMTP. Zapier does not receive authentication links or notification recipient addresses.
