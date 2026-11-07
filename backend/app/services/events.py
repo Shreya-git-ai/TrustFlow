@@ -13,6 +13,7 @@ from psycopg.types.json import Jsonb
 from app.db.repository import read_connection, transaction
 from app.integrations.zapier import send_event
 from app.observability import log_event
+from app.security import public_frontend_origin
 from app.services.email import is_workflow_email_event, send_workflow_email
 
 
@@ -101,9 +102,7 @@ def _workflow_email_context(event: str, data: dict) -> dict:
 
 
 def _frontend_origin() -> tuple[str, str] | None:
-    base_url = os.getenv("TRUSTFLOW_FRONTEND_URL", "").strip()
-    if not base_url and os.getenv("TRUSTFLOW_ENV", "development").lower() != "production":
-        base_url = "http://localhost:5173"
+    base_url = public_frontend_origin()
     try:
         parsed = urlsplit(base_url)
         hostname = (parsed.hostname or "").lower()

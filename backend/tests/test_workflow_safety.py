@@ -68,6 +68,25 @@ class WorkflowSafetyTests(unittest.TestCase):
         self.assertTrue(connection.assert_owner_filter)
         self.assertEqual(connection.params, ("foreign-project", "other-user", "other-user"))
 
+    def test_payment_lookup_rejects_another_clients_milestone(self):
+        class Connection:
+            def execute(self, sql, params):
+                self.params = params
+                return _Cursor({"id": "pay-1", "client_id": "owner-client"})
+
+        connection = Connection()
+
+        @contextmanager
+        def read():
+            yield connection
+
+        with patch("app.services.payments.read_connection", read):
+            with self.assertRaises(workflow.DomainError) as error:
+                payments.payment_for_client({"id": "other-client", "role": "client"}, "foreign-milestone")
+
+        self.assertEqual(error.exception.status_code, 404)
+        self.assertEqual(connection.params, ("foreign-milestone",))
+
     def test_capture_rejects_missing_or_stale_approval_without_provider_call(self):
         base = {
             "id": "pay-1", "milestone_id": "m-1", "project_id": "p-1", "client_id": "client-1",
@@ -95,6 +114,7 @@ class WorkflowSafetyTests(unittest.TestCase):
             "id": "pay-1", "milestone_id": "m-1", "project_id": "p-1", "client_id": "client-1",
             "status": "authorized", "evidence_revision": 3, "milestone_status": "approved",
             "approved_evidence_revision": 3, "approved_assessment_id": "report-1",
+            "capture_request_id": None,
         }
         connection = _CaptureConnection(payment, {"decision": "approved", "evidence_revision": 3},
                                         {"evidence_revision": 2, "all_met": True, "is_stale": True, "outcome": "ok"})
@@ -108,6 +128,60 @@ class WorkflowSafetyTests(unittest.TestCase):
                 payments.begin_capture({"id": "client-1", "role": "client"}, "m-1")
         self.assertIn("current passing assessment", error.exception.detail)
         self.assertFalse(connection.updated)
+
+    def test_capture_starts_only_with_persisted_current_client_approval(self):
+        payment = {
+            "id": "pay-1", "milestone_id": "m-1", "project_id": "p-1", "client_id": "client-1",
+            "status": "authorized", "evidence_revision": 3, "milestone_status": "approved",
+            "approved_evidence_revision": 3, "approved_assessment_id": "report-1",
+            "capture_request_id": None,
+        }
+        connection = _CaptureConnection(
+            payment,
+            {"decision": "approved", "evidence_revision": 3},
+            {"evidence_revision": 3, "all_met": True, "is_stale": False, "outcome": "ok"},
+        )
+
+        @contextmanager
+        def tx():
+            yield connection
+
+        with patch("app.services.payments.transaction", tx):
+            result = payments.begin_capture({"id": "client-1", "role": "client"}, "m-1")
+
+        self.assertEqual(result["status"], "capture_pending")
+        self.assertTrue(connection.updated)
+
+    def test_capture_pending_cannot_be_submitted_again_and_captured_is_idempotent(self):
+        base = {
+            "id": "pay-1", "milestone_id": "m-1", "project_id": "p-1", "client_id": "client-1",
+            "status": "capture_pending", "evidence_revision": 3, "milestone_status": "approved",
+            "approved_evidence_revision": 3, "approved_assessment_id": "report-1",
+        }
+        pending_connection = _CaptureConnection(base)
+
+        @contextmanager
+        def pending_tx():
+            yield pending_connection
+
+        with patch("app.services.payments.transaction", pending_tx):
+            with self.assertRaises(workflow.DomainError) as error:
+                payments.begin_capture({"id": "client-1", "role": "client"}, "m-1")
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertIn("reconciliation", error.exception.detail)
+        self.assertFalse(pending_connection.updated)
+
+        captured_connection = _CaptureConnection({**base, "status": "captured", "paypal_capture_id": "CAPTURE123"})
+
+        @contextmanager
+        def captured_tx():
+            yield captured_connection
+
+        with patch("app.services.payments.transaction", captured_tx):
+            result = payments.begin_capture({"id": "client-1", "role": "client"}, "m-1")
+        self.assertEqual(result["status"], "captured")
+        self.assertEqual(result["paypal_capture_id"], "CAPTURE123")
+        self.assertFalse(captured_connection.updated)
 
 
 if __name__ == "__main__":

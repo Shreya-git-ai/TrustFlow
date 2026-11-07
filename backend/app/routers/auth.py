@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app.observability import log_event
-from app.security import SESSION_COOKIE, allowed_origins, get_current_user, require_csrf, set_session_cookie
+from app.security import SESSION_COOKIE, allowed_origins, get_current_user, require_csrf, secure_session_cookie, set_session_cookie
 from app.services import auth
 from app.services import paypal_onboarding
 from app.services.email import email_delivery_configured, send_password_reset_email, send_verification_email
@@ -194,5 +194,11 @@ async def paypal_onboarding_complete(body: PayPalOnboardingCompleteBody, user: d
 @router.post("/logout")
 def logout(request: Request, response: Response, _user: dict = Depends(require_csrf)) -> dict:
     auth.revoke_session(request.cookies.get(SESSION_COOKIE))
-    response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="lax")
+    response.delete_cookie(
+        SESSION_COOKIE,
+        path="/",
+        httponly=True,
+        secure=secure_session_cookie(),
+        samesite="lax",
+    )
     return {"success": True}

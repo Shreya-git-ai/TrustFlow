@@ -70,7 +70,7 @@ class PaymentRouteTests(unittest.TestCase):
         }
         payment = {
             "id": "payment-id", "status": "authorized", "paypal_authorization_id": "AUTH123",
-            "amount": Decimal("10.00"), "currency": "USD",
+            "amount": Decimal("10.00"), "currency": "USD", "paypal_payee_merchant_id": None,
         }
         paypal = SimpleNamespace(
             get_authorization=AsyncMock(return_value=(
@@ -88,6 +88,96 @@ class PaymentRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("expiry could not be verified", response.json()["detail"])
         begin_capture.assert_not_called()
+
+    def test_order_authorize_capture_route_flow_with_mocked_paypal(self):
+        app.dependency_overrides[get_current_user] = lambda: {
+            "id": "client-id", "email": "c@example.test", "name": "Client",
+            "role": "client", "csrf_token": "csrf-value",
+        }
+        headers = {"x-csrf-token": "csrf-value", "origin": "http://localhost:5173"}
+        success = SimpleNamespace(is_success=True, status_code=201)
+        paypal = SimpleNamespace(
+            marketplace_configured=True,
+            create_order=AsyncMock(return_value=(success, {
+                "id": "ORDER123", "status": "CREATED",
+                "links": [{"rel": "approve", "href": "https://www.sandbox.paypal.com/checkoutnow?token=ORDER123"}],
+            })),
+            get_order=AsyncMock(return_value=(success, {"id": "ORDER123", "status": "APPROVED", "purchase_units": [{}]})),
+            authorize_order=AsyncMock(return_value=(success, {"purchase_units": [{"payments": {"authorizations": [{
+                "id": "AUTH123", "status": "CREATED", "amount": {"value": "10.00", "currency_code": "USD"},
+            }]}}]})),
+            get_authorization=AsyncMock(return_value=(success, {
+                "status": "CREATED", "expiration_time": "2099-01-01T00:00:00Z",
+                "amount": {"value": "10.00", "currency_code": "USD"},
+            })),
+            capture_authorization=AsyncMock(return_value=(success, {
+                "id": "CAPTURE123", "status": "COMPLETED",
+                "amount": {"value": "10.00", "currency_code": "USD"},
+            })),
+        )
+        payment = {
+            "id": "PAYMENT1", "status": "created", "amount": Decimal("10.00"),
+            "currency": "USD", "paypal_payee_merchant_id": None,
+            "create_request_id": "create-1", "authorize_request_id": "authorize-1",
+            "capture_request_id": "capture-1",
+            "paypal_authorization_id": "AUTH123",
+        }
+        ordered_payment = {**payment, "paypal_order_id": "ORDER123"}
+        authorized_payment = {**payment, "status": "authorized"}
+        captured_payment = {**payment, "status": "captured", "paypal_capture_id": "CAPTURE123"}
+        with patch("app.routers.payments.PayPalClient", return_value=paypal), \
+             patch("app.routers.payments.payments.prepare_order", return_value=payment), \
+             patch("app.routers.payments.payments.save_order", return_value=ordered_payment), \
+             patch("app.routers.payments.payments.payment_for_client", side_effect=[ordered_payment, authorized_payment]), \
+             patch("app.routers.payments.payments.set_buyer_approved"), \
+             patch("app.routers.payments.payments.mark_authorized", return_value=authorized_payment), \
+             patch("app.routers.payments.payments.begin_capture", return_value=authorized_payment), \
+             patch("app.routers.payments.payments.finish_capture", return_value=captured_payment), \
+             patch("app.routers.payments.deliver_pending", new_callable=AsyncMock):
+            order = self.client.post(
+                "/milestones/m1/payment/order",
+                headers=headers,
+                json={"amount": "0.01", "currency": "EUR", "paypal_order_id": "ATTACKER_ORDER"},
+            )
+            authorization = self.client.post("/milestones/m1/payment/authorize", headers=headers)
+            capture = self.client.post("/milestones/m1/payment/capture", headers=headers)
+
+        self.assertEqual(order.status_code, 201, order.text)
+        self.assertEqual(order.json()["order_id"], "ORDER123")
+        self.assertEqual(authorization.status_code, 200, authorization.text)
+        self.assertEqual(authorization.json(), {"status": "authorized", "authorization_id": "AUTH123"})
+        self.assertEqual(capture.status_code, 200, capture.text)
+        self.assertEqual(capture.json(), {"status": "captured", "capture_id": "CAPTURE123"})
+        paypal.create_order.assert_awaited_once()
+        paypal.create_order.assert_awaited_once_with(Decimal("10.00"), "USD", "create-1")
+        paypal.authorize_order.assert_awaited_once()
+        paypal.capture_authorization.assert_awaited_once()
+
+    def test_standard_order_does_not_require_marketplace_or_freelancer_onboarding(self):
+        app.dependency_overrides[get_current_user] = lambda: {
+            "id": "client-id", "email": "c@example.test", "name": "Client",
+            "role": "client", "csrf_token": "csrf-value",
+        }
+        payment = {
+            "id": "payment-id", "status": "created", "amount": Decimal("10.00"),
+            "currency": "USD", "create_request_id": "create-1", "paypal_payee_merchant_id": None,
+        }
+        success = SimpleNamespace(is_success=True, status_code=201)
+        paypal = SimpleNamespace(create_order=AsyncMock(return_value=(success, {
+            "id": "ORDER123", "status": "CREATED",
+            "links": [{"rel": "payer-action", "href": "https://www.sandbox.paypal.com/checkoutnow?token=ORDER123"}],
+        })))
+        with patch("app.routers.payments.payments.prepare_order", return_value=payment), \
+             patch("app.routers.payments.payments.save_order", return_value={**payment, "paypal_order_id": "ORDER123"}), \
+             patch("app.routers.payments.PayPalClient", return_value=paypal), \
+             patch("app.routers.payments.deliver_pending", new_callable=AsyncMock):
+            response = self.client.post(
+                "/milestones/m1/payment/order",
+                headers={"x-csrf-token": "csrf-value", "origin": "http://localhost:5173"},
+            )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["approval_url"], "https://www.sandbox.paypal.com/checkoutnow?token=ORDER123")
+        paypal.create_order.assert_awaited_once_with(Decimal("10.00"), "USD", "create-1")
 
 
 if __name__ == "__main__":

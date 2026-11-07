@@ -23,9 +23,12 @@ class _ApprovalDatabase:
         self.milestone = {
             "id": "milestone-1",
             "project_id": "project-1",
+            "project_title": "Website project",
+            "title": "Homepage delivery",
             "client_id": "client-1",
             "freelancer_id": "freelancer-1",
             "membership_status": "accepted",
+            "agreement_status": "accepted",
             "status": "submitted",
             "evidence_revision": 3,
             "approved_evidence_revision": None,
