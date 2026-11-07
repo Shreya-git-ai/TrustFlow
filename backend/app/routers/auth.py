@@ -64,7 +64,7 @@ def _check_origin(request: Request) -> None:
 
 
 def _auth_email_delivery_configured() -> bool:
-    return email_delivery_configured() or bool(os.getenv("ZAPIER_AUTH_WEBHOOK_URL", "").strip())
+    return email_delivery_configured()
 
 
 @router.post("/signup", status_code=201)

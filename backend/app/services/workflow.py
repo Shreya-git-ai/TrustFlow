@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -113,8 +112,8 @@ def create_project(user: dict, title: str, description: str, currency: str, free
         ).fetchone()
         if freelancer is not None and freelancer["role"] != "freelancer":
             raise DomainError(409, "That email belongs to a client account. Invite a freelancer email address.")
-        if freelancer is None and not email_delivery_configured() and not os.getenv("ZAPIER_WEBHOOK_URL", "").strip():
-            raise DomainError(503, "Email invitations are not configured. Set up SMTP or the workflow Zapier hook before inviting a new freelancer.")
+        if not email_delivery_configured():
+            raise DomainError(503, "SMTP email delivery must be configured before sending project invitations.")
         if freelancer is not None and str(freelancer["id"]) == user["id"]:
             raise DomainError(422, "A client cannot invite their own account")
         row = connection.execute(
@@ -135,7 +134,9 @@ def create_project(user: dict, title: str, description: str, currency: str, free
                 "project_name": title.strip(),
                 "client_id": str(user["id"]),
                 "display_name": freelancer["display_name"] if freelancer else "",
-                "recipient_email": freelancer_email if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "recipient_email": freelancer_email,
+                "recipient_name": freelancer["display_name"] if freelancer else "",
+                "actor_name": user.get("name", ""),
                 "workspace_url": _invitation_signup_url(freelancer_email),
             },
             idempotency_key=str(row["id"]),
@@ -174,7 +175,11 @@ def accept_project(user: dict, project_id: str) -> dict:
                 "project_name": row["title"],
                 "freelancer_id": str(user["id"]),
                 "display_name": user.get("name", ""),
+                "freelancer_name": user.get("name", ""),
+                "client_name": event_recipient_name(connection, str(row["client_id"])),
+                "recipient_name": event_recipient_name(connection, str(row["client_id"])),
                 "recipient_email": event_recipient_email(connection, str(row["client_id"])),
+                "actor_name": user.get("name", ""),
                 "review_url": workspace_url(),
             },
             idempotency_key=str(row["id"]),
@@ -205,7 +210,11 @@ def decline_project(user: dict, project_id: str) -> dict:
                 "project_name": row["title"],
                 "freelancer_id": str(user["id"]),
                 "display_name": user.get("name", ""),
+                "freelancer_name": user.get("name", ""),
+                "client_name": event_recipient_name(connection, str(row["client_id"])),
+                "recipient_name": event_recipient_name(connection, str(row["client_id"])),
                 "recipient_email": event_recipient_email(connection, str(row["client_id"])),
+                "actor_name": user.get("name", ""),
                 "review_url": workspace_url(),
             },
             idempotency_key=str(row["id"]),
@@ -234,7 +243,9 @@ def cancel_project_invitation(user: dict, project_id: str) -> dict:
                 "project_title": row["title"],
                 "project_name": row["title"],
                 "client_id": str(user["id"]),
-                "recipient_email": row["invited_email"] if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "recipient_email": row["invited_email"],
+                "recipient_name": "",
+                "actor_name": user.get("name", ""),
                 "workspace_url": workspace_url(),
             },
             idempotency_key=str(row["id"]),
@@ -250,8 +261,8 @@ def cancel_project_invitation(user: dict, project_id: str) -> dict:
 def resend_project_invitation(user: dict, project_id: str) -> dict:
     if user["role"] != "client":
         raise DomainError(403, "Only the project client can resend an invitation")
-    if not email_delivery_configured() and not os.getenv("ZAPIER_WEBHOOK_URL", "").strip():
-        raise DomainError(503, "Email invitations are not configured. Set up SMTP or the workflow Zapier hook before resending.")
+    if not email_delivery_configured():
+        raise DomainError(503, "SMTP email delivery must be configured before resending project invitations.")
     with transaction() as connection:
         row = connection.execute(
             """SELECT project.id, project.title, project.invited_email, client.display_name AS client_name
@@ -269,7 +280,9 @@ def resend_project_invitation(user: dict, project_id: str) -> dict:
             {
                 "project_id": str(row["id"]), "project_title": row["title"], "project_name": row["title"],
                 "client_id": str(user["id"]),
-                "recipient_email": row["invited_email"] if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "recipient_email": row["invited_email"],
+                "recipient_name": "",
+                "actor_name": row.get("client_name", ""),
                 "workspace_url": _invitation_signup_url(row["invited_email"]),
             },
             idempotency_key=str(uuid4()),
@@ -334,12 +347,14 @@ def create_milestone(user: dict, project_id: str, title: str, criteria: list[str
                 "milestone_title": title.strip(),
                 "project_title": project["title"],
                 "project_name": project["title"],
+                "amount": str(amount),
+                "currency": currency,
                 "client_id": str(project["client_id"]),
                 "freelancer_id": str(project["freelancer_id"]) if project["freelancer_id"] else None,
-                "recipient_email": (event_recipient_email(connection, str(project["freelancer_id"])) if project["freelancer_id"] else project["invited_email"])
-                if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
-                "display_name": event_recipient_name(connection, str(project["freelancer_id"]))
-                if project["freelancer_id"] and os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "recipient_email": event_recipient_email(connection, str(project["freelancer_id"])) if project["freelancer_id"] else project["invited_email"],
+                "recipient_name": event_recipient_name(connection, str(project["freelancer_id"])) if project["freelancer_id"] else "",
+                "actor_name": user.get("name", ""),
+                "due_at": due_at.isoformat() if due_at else None,
                 "review_url": milestone_review_url(str(project_id), str(row["id"])),
             },
             idempotency_key=str(row["id"]),
@@ -387,12 +402,14 @@ def update_milestone(user: dict, project_id: str, milestone_id: str, title: str,
                 "milestone_title": title.strip(),
                 "project_title": project["title"],
                 "project_name": project["title"],
+                "amount": str(amount),
+                "currency": currency,
                 "client_id": str(project["client_id"]),
                 "freelancer_id": str(project["freelancer_id"]) if project["freelancer_id"] else None,
-                "recipient_email": (event_recipient_email(connection, str(project["freelancer_id"])) if project["freelancer_id"] else project["invited_email"])
-                if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
-                "display_name": event_recipient_name(connection, str(project["freelancer_id"]))
-                if project["freelancer_id"] and os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "recipient_email": event_recipient_email(connection, str(project["freelancer_id"])) if project["freelancer_id"] else project["invited_email"],
+                "recipient_name": event_recipient_name(connection, str(project["freelancer_id"])) if project["freelancer_id"] else "",
+                "actor_name": user.get("name", ""),
+                "due_at": due_at.isoformat() if due_at else None,
                 "review_url": milestone_review_url(str(project_id), str(milestone_id)),
             },
             idempotency_key=str(uuid4()),
@@ -432,9 +449,11 @@ def decide_milestone_agreement(user: dict, milestone_id: str, decision: str, not
                 "milestone_title": milestone["title"],
                 "freelancer_id": str(user["id"]),
                 "display_name": user.get("name", ""),
+                "freelancer_name": user.get("name", ""),
+                "recipient_name": event_recipient_name(connection, str(milestone["client_id"])),
                 "agreement_note": clean_note,
-                "recipient_email": event_recipient_email(connection, str(milestone["client_id"]))
-                if os.getenv("ZAPIER_WEBHOOK_URL", "").strip() else None,
+                "recipient_email": event_recipient_email(connection, str(milestone["client_id"])),
+                "actor_name": user.get("name", ""),
                 "review_url": milestone_review_url(str(milestone["project_id"]), str(milestone_id)),
             },
             idempotency_key=str(uuid4()),
@@ -478,9 +497,15 @@ def add_evidence(user: dict, milestone_id: str, description: str, links: list[st
                 "project_id": str(milestone["project_id"]),
                 "milestone_id": str(milestone_id),
                 "evidence_revision": revision,
+                "project_title": milestone["project_title"],
+                "project_name": milestone["project_title"],
+                "milestone_title": milestone["title"],
                 "client_id": str(milestone["client_id"]),
                 "freelancer_id": str(milestone["freelancer_id"]),
                 "recipient_email": event_recipient_email(connection, str(milestone["client_id"])),
+                "recipient_name": event_recipient_name(connection, str(milestone["client_id"])),
+                "freelancer_name": user.get("name", ""),
+                "actor_name": user.get("name", ""),
                 "file_attached": bool(file_key),
                 "review_url": milestone_review_url(str(milestone["project_id"]), str(milestone_id)),
             },
@@ -616,6 +641,9 @@ def persist_assessment(user: dict, milestone: dict, evidence: dict, result: dict
                     "milestone_id": str(milestone["id"]),
                     "assessment_id": str(report_id),
                     "evidence_revision": current_revision,
+                    "project_title": milestone["project_title"],
+                    "project_name": milestone["project_title"],
+                    "milestone_title": milestone["title"],
                     "overall_result": "all_met" if all_met else "needs_review",
                     "all_met": all_met,
                     "criterion_summary": [
@@ -628,6 +656,7 @@ def persist_assessment(user: dict, milestone: dict, evidence: dict, result: dict
                     "client_approval_required": True,
                     "client_id": str(milestone["client_id"]),
                     "recipient_email": event_recipient_email(connection, str(milestone["client_id"])),
+                    "recipient_name": event_recipient_name(connection, str(milestone["client_id"])),
                     "review_url": milestone_review_url(str(milestone["project_id"]), str(milestone["id"])),
                 },
                 idempotency_key=str(report_id),
@@ -705,14 +734,21 @@ def decide_milestone(user: dict, milestone_id: str, decision: str, note: str = "
         event_data = {
             "project_id": str(milestone["project_id"]),
             "milestone_id": str(milestone_id),
+            "project_title": milestone["project_title"],
+            "project_name": milestone["project_title"],
+            "milestone_title": milestone["title"],
             "evidence_revision": milestone["evidence_revision"],
             "assessment_id": str(latest["id"]) if latest else None,
             "client_id": str(milestone["client_id"]),
             "freelancer_id": str(milestone["freelancer_id"]),
+            "client_name": event_recipient_name(connection, str(milestone["client_id"])),
+            "freelancer_name": event_recipient_name(connection, str(milestone["freelancer_id"])),
+            "actor_name": user.get("name", ""),
             "review_url": milestone_review_url(str(milestone["project_id"]), str(milestone_id)),
         }
         if decision == "revision_requested":
             event_data["recipient_email"] = event_recipient_email(connection, str(milestone["freelancer_id"]))
+            event_data["recipient_name"] = event_data["freelancer_name"]
             enqueue_event(
                 connection,
                 "revision.requested",
@@ -721,6 +757,7 @@ def decide_milestone(user: dict, milestone_id: str, decision: str, note: str = "
             )
         elif decision == "approved":
             event_data["recipient_email"] = event_recipient_email(connection, str(milestone["freelancer_id"]))
+            event_data["recipient_name"] = event_data["freelancer_name"]
             enqueue_event(
                 connection,
                 "milestone.approved",
@@ -728,6 +765,8 @@ def decide_milestone(user: dict, milestone_id: str, decision: str, note: str = "
                 idempotency_key=f"{milestone_id}:{milestone['evidence_revision']}",
             )
         else:
+            event_data["recipient_email"] = event_recipient_email(connection, str(milestone["freelancer_id"]))
+            event_data["recipient_name"] = event_data["freelancer_name"]
             enqueue_event(
                 connection,
                 f"milestone.{decision}",

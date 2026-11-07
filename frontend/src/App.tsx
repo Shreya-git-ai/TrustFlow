@@ -552,7 +552,7 @@ function App() {
           onOpenInsights={() => navigateSection('insights')} onOpenResources={() => navigateSection('resources')} onOpenActivity={openWorkspaceActivity}
           onAccept={(id) => void run(async () => { await acceptProject(id); await loadProjects(); await loadActivity(); await loadNotifications(); setNotice('Project invitation accepted.') })}
           onDecline={(id) => { if (window.confirm('Decline this project invitation?')) void run(async () => { await declineProject(id); await loadProjects(); await loadActivity(); await loadNotifications(); setNotice('Project invitation declined.') }) }}
-          onCreate={(data) => run(async () => { await createProject(data); await loadProjects(); await loadActivity(); await loadNotifications(); setNotice('Project created. The freelancer can sign up or sign in with the invited email to review it. Invitation email depends on SMTP or Zapier setup.') })}
+          onCreate={(data) => run(async () => { await createProject(data); await loadProjects(); await loadActivity(); await loadNotifications(); setNotice('Project created. The freelancer can use the invitation email to sign up or sign in and review it.') })}
         />}
         {!project && !settingsOpen && activeSection === 'payments' && <PaymentsPage
           payments={payments} paymentsLoading={paymentsLoading} paymentsError={paymentsError}
@@ -631,7 +631,6 @@ function AuthScreen({ mode, setMode, onSubmit, busy, error, initialEmail = '' }:
       </form>
       <p className="switch-auth">{mode === 'login' ? 'New to TrustFlow?' : 'Already have an account?'} <button onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}>{mode === 'login' ? 'Create account' : 'Sign in'}</button></p>
       {mode === 'login' && <a className="auth-forgot-password" href="/forgot-password">Forgot password?</a>}
-      <p className="auth-limit">Email confirmation is enabled when delivery is configured. Password resets use a one-time email link.</p>
     </div></section>
   </main>
 }

@@ -107,10 +107,16 @@ def payment_for_client(user: dict, milestone_id: str) -> dict:
         raise DomainError(403, "Only the project client can access payment operations")
     with read_connection() as connection:
         row = connection.execute(
-            """SELECT pay.*, m.project_id, m.evidence_revision, m.status AS milestone_status,
-                      m.approved_evidence_revision, m.approved_assessment_id, p.client_id
+            """SELECT pay.*, m.project_id, m.title AS milestone_title, p.title AS project_title,
+                      m.evidence_revision, m.status AS milestone_status,
+                      m.approved_evidence_revision, m.approved_assessment_id,
+                      p.client_id, p.freelancer_id, client.email AS client_email,
+                      freelancer.email AS freelancer_email, client.display_name AS client_name,
+                      freelancer.display_name AS freelancer_name
                FROM payments pay JOIN milestones m ON m.id = pay.milestone_id
                JOIN projects p ON p.id = m.project_id
+               JOIN users client ON client.id = p.client_id
+               LEFT JOIN users freelancer ON freelancer.id = p.freelancer_id
                WHERE pay.milestone_id = %s""",
             (milestone_id,),
         ).fetchone()
@@ -150,7 +156,27 @@ def mark_authorized(user: dict, milestone_id: str, authorization_id: str, amount
         if row is None:
             raise DomainError(409, "Payment state changed while authorizing")
         _audit(connection, "payment.authorized", user, project_id=payment["project_id"], milestone_id=milestone_id, payment_id=row["id"], details={"authorization_id": authorization_id, "amount": str(amount), "currency": currency})
-        enqueue_event(connection, "payment.authorized", {"order_id": payment["paypal_order_id"], "authorization_id": authorization_id, "status": provider_status, "amount": str(amount), "currency": currency})
+        enqueue_event(connection, "payment.authorized", {
+            "order_id": payment["paypal_order_id"],
+            "authorization_id": authorization_id,
+            "status": provider_status,
+            "amount": str(amount),
+            "currency": currency,
+            "project_id": str(payment["project_id"]),
+            "project_title": payment["project_title"],
+            "milestone_id": str(milestone_id),
+            "milestone_title": payment["milestone_title"],
+            "client_id": str(payment["client_id"]),
+            "freelancer_id": str(payment["freelancer_id"]),
+            "recipient_email": payment["freelancer_email"],
+            "recipient_name": payment["freelancer_name"] or "",
+            "client_email": payment["client_email"],
+            "freelancer_email": payment["freelancer_email"],
+            "client_name": payment["client_name"],
+            "freelancer_name": payment["freelancer_name"],
+            "actor_name": payment["client_name"],
+            "review_url": milestone_review_url(str(payment["project_id"]), str(milestone_id)),
+        })
     return dict(row)
 
 
@@ -203,8 +229,9 @@ def finish_capture(payment_id: str, data: dict, error: str | None = None) -> dic
     status = data.get("status")
     with transaction() as connection:
         payment = connection.execute(
-            """SELECT pay.*, m.project_id, p.client_id, p.freelancer_id,
-                      client.email AS client_email, freelancer.email AS freelancer_email
+            """SELECT pay.*, m.project_id, m.title AS milestone_title, p.title AS project_title,
+                      p.client_id, p.freelancer_id, client.email AS client_email,
+                      freelancer.email AS freelancer_email
                FROM payments pay
                JOIN milestones m ON m.id = pay.milestone_id
                JOIN projects p ON p.id = m.project_id
@@ -244,6 +271,8 @@ def finish_capture(payment_id: str, data: dict, error: str | None = None) -> dic
                     "payment_id": str(payment["id"]),
                     "project_id": str(payment["project_id"]),
                     "milestone_id": str(payment["milestone_id"]),
+                    "project_title": payment["project_title"],
+                    "milestone_title": payment["milestone_title"],
                     "capture_id": capture_id,
                     "amount": str(payment["amount"]),
                     "currency": payment["currency"].strip(),
@@ -264,8 +293,9 @@ def find_capture_by_order(order_id: str, capture_id: str, amount: Decimal, curre
         return False
     with transaction() as connection:
         payment = connection.execute(
-            """SELECT pay.*, m.project_id, p.client_id, p.freelancer_id,
-                      client.email AS client_email, freelancer.email AS freelancer_email
+            """SELECT pay.*, m.project_id, m.title AS milestone_title, p.title AS project_title,
+                      p.client_id, p.freelancer_id, client.email AS client_email,
+                      freelancer.email AS freelancer_email
                FROM payments pay
                JOIN milestones m ON m.id = pay.milestone_id
                JOIN projects p ON p.id = m.project_id
@@ -293,6 +323,8 @@ def find_capture_by_order(order_id: str, capture_id: str, amount: Decimal, curre
                 "payment_id": str(payment["id"]),
                 "project_id": str(payment["project_id"]),
                 "milestone_id": str(payment["milestone_id"]),
+                "project_title": payment["project_title"],
+                "milestone_title": payment["milestone_title"],
                 "capture_id": capture_id,
                 "order_id": order_id,
                 "amount": str(amount),
